@@ -1,611 +1,266 @@
 <?php
 // FILE: /app/views/partials/property_gallery.php
 /**
- * Property Image Gallery Component
- * Include this in property view to display image gallery
+ * Property image gallery (embedded in properties/view).
  *
- * Required variables:
- * - $propertyId: Property ID
- * - $images: Array of property images (optional, will be loaded via AJAX if not provided)
+ * Variables:
+ * - $property  Property row (required; id is used)
+ * - $images    Rows from PropertyImage::getPropertyImages() (optional, default none)
+ * - $canEdit   Whether upload/manage controls are shown (default can('properties.images'))
+ *
+ * Images are served by PropertyGalleryController::image($id) (tenant-checked);
+ * management calls go to /propertygallery/* with the CSRF header added by the
+ * layout's fetch() wrapper.
  */
 
-$propertyId = isset($propertyId) ? $propertyId : null;
-$images = isset($images) ? $images : array();
-$canEdit = isset($canEdit) ? $canEdit : true;
+$galleryPropertyId = (int)$property['id'];
+$galleryImages = array();
+foreach ((isset($images) && is_array($images) ? $images : array()) as $img) {
+    $galleryImages[] = array(
+        'id' => (int)$img['id'],
+        'file_name' => (string)$img['file_name'],
+        'caption' => isset($img['caption']) ? (string)$img['caption'] : '',
+        'is_primary' => !empty($img['is_primary']),
+        'url' => BASE_URL . '/propertygallery/image/' . (int)$img['id']
+    );
+}
+$galleryCanEdit = isset($canEdit) ? (bool)$canEdit : can('properties.images');
 ?>
-
-<div class="property-gallery-container">
-    <div class="gallery-header">
-        <h3>Property Images</h3>
-        <?php if ($canEdit): ?>
-        <button type="button" class="btn btn-primary" onclick="showUploadModal()">
-            📷 Upload Images
-        </button>
-        <?php endif; ?>
+<div class="card" id="pg-gallery">
+    <div class="card-header">
+        <h2>Photos <span class="text-muted small" id="pg-count">(<?php echo count($galleryImages); ?>)</span></h2>
     </div>
-
-    <div id="propertyGallery" class="property-gallery">
-        <?php if (empty($images)): ?>
-        <p class="no-images">No images uploaded yet.</p>
-        <?php else: ?>
-        <?php foreach ($images as $image): ?>
-        <div class="gallery-item" data-image-id="<?php echo $image['id']; ?>">
-            <img src="<?php echo BASE_URL . '/' . $image['file_path']; ?>"
-                 alt="<?php echo View::escape($image['caption'] ?: $image['file_name']); ?>"
-                 onclick="openLightbox(<?php echo $image['id']; ?>)">
-
-            <?php if ($image['is_primary']): ?>
-            <span class="primary-badge">Primary</span>
-            <?php endif; ?>
-
-            <?php if ($canEdit): ?>
-            <div class="gallery-item-actions">
-                <button type="button" class="btn-icon" onclick="setPrimaryImage(<?php echo $image['id']; ?>)"
-                        title="Set as primary">
-                    ⭐
-                </button>
-                <button type="button" class="btn-icon" onclick="editCaption(<?php echo $image['id']; ?>, '<?php echo View::escape($image['caption']); ?>')"
-                        title="Edit caption">
-                    ✏️
-                </button>
-                <button type="button" class="btn-icon btn-danger" onclick="deleteImage(<?php echo $image['id']; ?>)"
-                        title="Delete">
-                    🗑️
-                </button>
-            </div>
-            <?php endif; ?>
-
-            <?php if ($image['caption']): ?>
-            <div class="gallery-item-caption">
-                <?php echo View::escape($image['caption']); ?>
-            </div>
+    <div class="card-body">
+        <div id="pg-grid" class="pg-grid">
+            <?php if (empty($galleryImages)): ?>
+                <p class="text-muted" id="pg-empty">No photos uploaded yet.</p>
+            <?php else: ?>
+                <?php foreach ($galleryImages as $index => $img): ?>
+                <figure class="pg-item">
+                    <img src="<?php echo e($img['url']); ?>" alt="<?php echo e($img['caption'] !== '' ? $img['caption'] : $img['file_name']); ?>" data-index="<?php echo (int)$index; ?>" loading="lazy">
+                    <?php if ($img['is_primary']): ?><span class="badge badge-warning pg-primary">Primary</span><?php endif; ?>
+                    <?php if ($img['caption'] !== ''): ?><figcaption><?php echo e($img['caption']); ?></figcaption><?php endif; ?>
+                </figure>
+                <?php endforeach; ?>
             <?php endif; ?>
         </div>
-        <?php endforeach; ?>
+
+        <?php if ($galleryCanEdit): ?>
+        <form id="pg-upload-form" class="mt-2" enctype="multipart/form-data" method="post"
+              action="<?php echo e(url('propertygallery/upload/' . $galleryPropertyId)); ?>">
+            <?php echo csrf_field(); ?>
+            <div class="d-flex gap-1 align-center flex-wrap">
+                <input type="file" name="images[]" id="pg-files" class="form-control" style="max-width: 360px;"
+                       accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" multiple>
+                <button type="submit" class="btn btn-primary btn-sm" id="pg-upload-btn">Upload photos</button>
+            </div>
+            <span class="form-help">JPG, PNG, GIF or WebP &middot; up to 10 files, 5 MB each. The first photo becomes the primary image.</span>
+            <div id="pg-message" class="mt-1 small" role="status"></div>
+        </form>
         <?php endif; ?>
     </div>
 </div>
 
-<!-- Upload Modal -->
-<div id="uploadModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <span class="close" onclick="closeUploadModal()">&times;</span>
-        <h3>Upload Property Images</h3>
-
-        <form id="imageUploadForm" enctype="multipart/form-data">
-            <div class="form-group">
-                <label for="imageFiles">Select Images (Max 10 images, 5MB each)</label>
-                <input type="file" id="imageFiles" name="images[]" accept="image/*" multiple
-                       class="form-control">
-                <small class="form-text">Supported formats: JPG, PNG, GIF, WebP</small>
-            </div>
-
-            <div id="imagePreview" class="image-preview"></div>
-
-            <div class="form-actions">
-                <button type="button" class="btn btn-primary" onclick="uploadImages()">
-                    Upload Images
-                </button>
-                <button type="button" class="btn btn-secondary" onclick="closeUploadModal()">
-                    Cancel
-                </button>
-            </div>
-        </form>
-
-        <div id="uploadProgress" style="display: none;">
-            <div class="progress-bar">
-                <div id="progressFill" class="progress-fill"></div>
-            </div>
-            <p id="progressText">Uploading...</p>
-        </div>
-    </div>
-</div>
-
-<!-- Lightbox -->
-<div id="lightbox" class="lightbox" style="display: none;" onclick="closeLightbox()">
-    <span class="lightbox-close">&times;</span>
-    <div class="lightbox-content" onclick="event.stopPropagation()">
-        <img id="lightboxImage" src="" alt="">
-        <div class="lightbox-caption" id="lightboxCaption"></div>
-        <div class="lightbox-nav">
-            <button class="lightbox-btn prev" onclick="navigateLightbox(-1)">❮</button>
-            <button class="lightbox-btn next" onclick="navigateLightbox(1)">❯</button>
-        </div>
-    </div>
-</div>
-
-<!-- Caption Edit Modal -->
-<div id="captionModal" class="modal" style="display: none;">
-    <div class="modal-content modal-sm">
-        <span class="close" onclick="closeCaptionModal()">&times;</span>
-        <h3>Edit Image Caption</h3>
-
-        <form id="captionForm" onsubmit="saveCaptionsubmit(event)">
-            <input type="hidden" id="captionImageId">
-
-            <div class="form-group">
-                <label for="captionText">Caption</label>
-                <input type="text" id="captionText" class="form-control"
-                       placeholder="Enter image caption">
-            </div>
-
-            <div class="form-actions">
-                <button type="submit" class="btn btn-primary">Save</button>
-                <button type="button" class="btn btn-secondary" onclick="closeCaptionModal()">Cancel</button>
-            </div>
-        </form>
-    </div>
+<div id="pg-lightbox" class="pg-lightbox" hidden>
+    <button type="button" class="pg-lb-close" aria-label="Close">&times;</button>
+    <button type="button" class="pg-lb-nav pg-lb-prev" aria-label="Previous">&#10094;</button>
+    <figure>
+        <img id="pg-lb-img" src="" alt="">
+        <figcaption id="pg-lb-caption"></figcaption>
+    </figure>
+    <button type="button" class="pg-lb-nav pg-lb-next" aria-label="Next">&#10095;</button>
 </div>
 
 <style>
-.property-gallery-container {
-    margin: 20px 0;
-}
-
-.gallery-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-}
-
-.gallery-header h3 {
-    margin: 0;
-    color: #2c3e50;
-}
-
-.property-gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 15px;
-}
-
-.gallery-item {
-    position: relative;
-    aspect-ratio: 4/3;
-    overflow: hidden;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    cursor: pointer;
-    transition: transform 0.2s;
-}
-
-.gallery-item:hover {
-    transform: scale(1.05);
-}
-
-.gallery-item img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.primary-badge {
-    position: absolute;
-    top: 10px;
-    left: 10px;
-    background: #f39c12;
-    color: white;
-    padding: 5px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: bold;
-}
-
-.gallery-item-actions {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    display: flex;
-    gap: 5px;
-    opacity: 0;
-    transition: opacity 0.2s;
-}
-
-.gallery-item:hover .gallery-item-actions {
-    opacity: 1;
-}
-
-.btn-icon {
-    background: rgba(255,255,255,0.9);
-    border: none;
-    padding: 8px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 16px;
-    transition: background 0.2s;
-}
-
-.btn-icon:hover {
-    background: white;
-}
-
-.btn-icon.btn-danger:hover {
-    background: #e74c3c;
-    color: white;
-}
-
-.gallery-item-caption {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: rgba(0,0,0,0.7);
-    color: white;
-    padding: 8px;
-    font-size: 13px;
-}
-
-.no-images {
-    text-align: center;
-    padding: 40px;
-    color: #95a5a6;
-}
-
-.image-preview {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-    gap: 10px;
-    margin: 15px 0;
-}
-
-.preview-item {
-    position: relative;
-    aspect-ratio: 1;
-    border-radius: 4px;
-    overflow: hidden;
-}
-
-.preview-item img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.progress-bar {
-    width: 100%;
-    height: 30px;
-    background: #ecf0f1;
-    border-radius: 15px;
-    overflow: hidden;
-    margin: 15px 0;
-}
-
-.progress-fill {
-    height: 100%;
-    background: #3498db;
-    transition: width 0.3s;
-    width: 0%;
-}
-
-/* Lightbox */
-.lightbox {
-    position: fixed;
-    z-index: 2000;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0,0,0,0.95);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.lightbox-close {
-    position: absolute;
-    top: 20px;
-    right: 40px;
-    color: white;
-    font-size: 40px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.lightbox-content {
-    max-width: 90%;
-    max-height: 90%;
-    position: relative;
-}
-
-.lightbox-content img {
-    max-width: 100%;
-    max-height: 80vh;
-    object-fit: contain;
-}
-
-.lightbox-caption {
-    color: white;
-    text-align: center;
-    padding: 15px;
-    font-size: 16px;
-}
-
-.lightbox-nav {
-    position: absolute;
-    top: 50%;
-    width: calc(100% + 100px);
-    left: -50px;
-    display: flex;
-    justify-content: space-between;
-    transform: translateY(-50%);
-}
-
-.lightbox-btn {
-    background: rgba(255,255,255,0.3);
-    color: white;
-    border: none;
-    padding: 15px 20px;
-    font-size: 24px;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background 0.2s;
-}
-
-.lightbox-btn:hover {
-    background: rgba(255,255,255,0.5);
-}
-
-.modal-sm {
-    max-width: 400px;
-}
-
-@media (max-width: 768px) {
-    .property-gallery {
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    }
-
-    .lightbox-nav {
-        width: 100%;
-        left: 0;
-    }
-}
+.pg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; }
+.pg-item { position: relative; margin: 0; background: #ecf0f1; border-radius: 6px; overflow: hidden; }
+.pg-item img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in; }
+.pg-item figcaption { font-size: 12px; padding: 0.3rem 0.5rem; color: #2c3e50; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-primary { position: absolute; top: 6px; left: 6px; }
+.pg-actions { display: flex; gap: 0.25rem; padding: 0.3rem 0.4rem 0.45rem; flex-wrap: wrap; }
+.pg-actions .btn { padding: 0.15rem 0.45rem; font-size: 11px; }
+.pg-lightbox { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.9); display: flex; align-items: center; justify-content: center; }
+.pg-lightbox[hidden] { display: none; }
+.pg-lightbox figure { margin: 0; max-width: 85vw; text-align: center; }
+.pg-lightbox img { max-width: 85vw; max-height: 80vh; object-fit: contain; }
+.pg-lightbox figcaption { color: #fff; margin-top: 0.5rem; }
+.pg-lb-close, .pg-lb-nav { background: rgba(255,255,255,0.15); color: #fff; border: 0; border-radius: 4px; font-size: 28px; cursor: pointer; padding: 0.25rem 0.8rem; }
+.pg-lb-close { position: absolute; top: 1rem; right: 1rem; }
+.pg-lb-nav { margin: 0 1rem; }
 </style>
 
 <script>
-const PROPERTY_ID = <?php echo $propertyId; ?>;
-const BASE_URL = '<?php echo BASE_URL; ?>';
-let currentImages = <?php echo json_encode($images); ?>;
-let currentLightboxIndex = 0;
+(function () {
+    var propertyId = <?php echo (int)$galleryPropertyId; ?>;
+    var canEdit = <?php echo $galleryCanEdit ? 'true' : 'false'; ?>;
+    var images = <?php echo json_encode($galleryImages, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+    var base = window.BASE_URL || '';
+    var grid = document.getElementById('pg-grid');
+    var countEl = document.getElementById('pg-count');
+    var message = document.getElementById('pg-message');
+    var lightbox = document.getElementById('pg-lightbox');
+    var lbImg = document.getElementById('pg-lb-img');
+    var lbCaption = document.getElementById('pg-lb-caption');
+    var current = 0;
 
-// Show upload modal
-function showUploadModal() {
-    document.getElementById('uploadModal').style.display = 'flex';
-    document.getElementById('imageFiles').value = '';
-    document.getElementById('imagePreview').innerHTML = '';
-}
+    function setMessage(text, isError) {
+        if (!message) { if (isError) { alert(text); } return; }
+        message.textContent = text;
+        message.className = 'mt-1 small ' + (isError ? 'text-danger' : 'text-success');
+    }
 
-// Close upload modal
-function closeUploadModal() {
-    document.getElementById('uploadModal').style.display = 'none';
-}
-
-// Preview selected images
-document.addEventListener('DOMContentLoaded', function() {
-    const fileInput = document.getElementById('imageFiles');
-    if (fileInput) {
-        fileInput.addEventListener('change', function(e) {
-            const preview = document.getElementById('imagePreview');
-            preview.innerHTML = '';
-
-            const files = Array.from(e.target.files);
-            files.slice(0, 10).forEach(file => {
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    const div = document.createElement('div');
-                    div.className = 'preview-item';
-                    div.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
-                    preview.appendChild(div);
-                };
-                reader.readAsDataURL(file);
-            });
+    function api(path, options) {
+        options = options || {};
+        options.headers = options.headers || {};
+        options.headers['Accept'] = 'application/json';
+        options.headers['X-Requested-With'] = 'XMLHttpRequest';
+        options.credentials = 'same-origin';
+        return fetch(base + '/propertygallery/' + path, options).then(function (res) {
+            return res.json().catch(function () { return { success: false, error: 'Unexpected server response (' + res.status + ')' }; });
         });
     }
-});
 
-// Upload images
-function uploadImages() {
-    const fileInput = document.getElementById('imageFiles');
-    const files = fileInput.files;
-
-    if (files.length === 0) {
-        alert('Please select images to upload');
-        return;
+    function postJson(path, payload) {
+        return api(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
     }
 
-    if (files.length > 10) {
-        alert('Maximum 10 images allowed');
-        return;
+    function button(label, cls, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm ' + cls;
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        return b;
     }
 
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-        formData.append('images[]', files[i]);
-    }
-
-    // Show progress
-    document.getElementById('uploadProgress').style.display = 'block';
-    document.getElementById('imageUploadForm').style.display = 'none';
-
-    fetch(BASE_URL + '/propertygallery/upload/' + PROPERTY_ID, {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert(`Uploaded ${data.uploaded} image(s)`);
-            closeUploadModal();
-            reloadGallery();
-        } else {
-            alert('Error: ' + (data.error || 'Upload failed'));
+    function render() {
+        grid.innerHTML = '';
+        countEl.textContent = '(' + images.length + ')';
+        if (!images.length) {
+            var p = document.createElement('p');
+            p.className = 'text-muted';
+            p.textContent = 'No photos uploaded yet.';
+            grid.appendChild(p);
+            return;
         }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Failed to upload images');
-    })
-    .finally(() => {
-        document.getElementById('uploadProgress').style.display = 'none';
-        document.getElementById('imageUploadForm').style.display = 'block';
-    });
-}
+        images.forEach(function (img, index) {
+            var fig = document.createElement('figure');
+            fig.className = 'pg-item';
 
-// Reload gallery
-function reloadGallery() {
-    fetch(BASE_URL + '/propertygallery/getImages/' + PROPERTY_ID)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                currentImages = data.images;
-                renderGallery(data.images);
+            var el = document.createElement('img');
+            el.src = img.url;
+            el.alt = img.caption || img.file_name;
+            el.loading = 'lazy';
+            el.addEventListener('click', function () { open(index); });
+            fig.appendChild(el);
+
+            if (img.is_primary) {
+                var badge = document.createElement('span');
+                badge.className = 'badge badge-warning pg-primary';
+                badge.textContent = 'Primary';
+                fig.appendChild(badge);
             }
-        })
-        .catch(error => console.error('Error:', error));
-}
-
-// Render gallery
-function renderGallery(images) {
-    const gallery = document.getElementById('propertyGallery');
-    if (images.length === 0) {
-        gallery.innerHTML = '<p class="no-images">No images uploaded yet.</p>';
-        return;
+            if (img.caption) {
+                var cap = document.createElement('figcaption');
+                cap.textContent = img.caption;
+                fig.appendChild(cap);
+            }
+            if (canEdit) {
+                var actions = document.createElement('div');
+                actions.className = 'pg-actions';
+                if (!img.is_primary) {
+                    actions.appendChild(button('Make primary', 'btn-outline', function () { setPrimary(img.id); }));
+                }
+                actions.appendChild(button('Caption', 'btn-outline', function () { editCaption(img); }));
+                actions.appendChild(button('Delete', 'btn-danger', function () { removeImage(img.id); }));
+                fig.appendChild(actions);
+            }
+            grid.appendChild(fig);
+        });
     }
 
-    gallery.innerHTML = images.map((img, index) => `
-        <div class="gallery-item" data-image-id="${img.id}">
-            <img src="${BASE_URL}/${img.file_path}" alt="${img.caption || img.file_name}"
-                 onclick="openLightbox(${index})">
-            ${img.is_primary ? '<span class="primary-badge">Primary</span>' : ''}
-            <div class="gallery-item-actions">
-                <button type="button" class="btn-icon" onclick="setPrimaryImage(${img.id})" title="Set as primary">⭐</button>
-                <button type="button" class="btn-icon" onclick="editCaption(${img.id}, '${img.caption || ''}')" title="Edit caption">✏️</button>
-                <button type="button" class="btn-icon btn-danger" onclick="deleteImage(${img.id})" title="Delete">🗑️</button>
-            </div>
-            ${img.caption ? `<div class="gallery-item-caption">${img.caption}</div>` : ''}
-        </div>
-    `).join('');
-}
-
-// Open lightbox
-function openLightbox(index) {
-    currentLightboxIndex = index;
-    const image = currentImages[index];
-
-    document.getElementById('lightboxImage').src = BASE_URL + '/' + image.file_path;
-    document.getElementById('lightboxCaption').textContent = image.caption || image.file_name;
-    document.getElementById('lightbox').style.display = 'flex';
-}
-
-// Close lightbox
-function closeLightbox() {
-    document.getElementById('lightbox').style.display = 'none';
-}
-
-// Navigate lightbox
-function navigateLightbox(direction) {
-    event.stopPropagation();
-    currentLightboxIndex = (currentLightboxIndex + direction + currentImages.length) % currentImages.length;
-    const image = currentImages[currentLightboxIndex];
-
-    document.getElementById('lightboxImage').src = BASE_URL + '/' + image.file_path;
-    document.getElementById('lightboxCaption').textContent = image.caption || image.file_name;
-}
-
-// Set primary image
-function setPrimaryImage(imageId) {
-    if (!confirm('Set this as the primary image?')) return;
-
-    fetch(BASE_URL + '/propertygallery/setPrimary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_id: imageId, property_id: PROPERTY_ID })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            reloadGallery();
-        } else {
-            alert('Error: ' + (data.error || 'Failed to set primary'));
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Failed to set primary image');
-    });
-}
-
-// Delete image
-function deleteImage(imageId) {
-    if (!confirm('Are you sure you want to delete this image?')) return;
-
-    fetch(BASE_URL + '/propertygallery/deleteImage/' + imageId, {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            reloadGallery();
-        } else {
-            alert('Error: ' + (data.error || 'Failed to delete'));
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Failed to delete image');
-    });
-}
-
-// Edit caption
-function editCaption(imageId, currentCaption) {
-    document.getElementById('captionModal').style.display = 'flex';
-    document.getElementById('captionImageId').value = imageId;
-    document.getElementById('captionText').value = currentCaption || '';
-}
-
-// Close caption modal
-function closeCaptionModal() {
-    document.getElementById('captionModal').style.display = 'none';
-}
-
-// Save caption
-function saveCaption(event) {
-    event.preventDefault();
-
-    const imageId = document.getElementById('captionImageId').value;
-    const caption = document.getElementById('captionText').value;
-
-    fetch(BASE_URL + '/propertygallery/updateCaption', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_id: imageId, caption: caption })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            closeCaptionModal();
-            reloadGallery();
-        } else {
-            alert('Error: ' + (data.error || 'Failed to save'));
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Failed to save caption');
-    });
-}
-
-// Keyboard navigation for lightbox
-document.addEventListener('keydown', function(e) {
-    const lightbox = document.getElementById('lightbox');
-    if (lightbox.style.display === 'flex') {
-        if (e.key === 'ArrowLeft') {
-            navigateLightbox(-1);
-        } else if (e.key === 'ArrowRight') {
-            navigateLightbox(1);
-        } else if (e.key === 'Escape') {
-            closeLightbox();
-        }
+    function reload() {
+        return api('getImages/' + propertyId).then(function (data) {
+            if (data.success) { images = data.images || []; render(); }
+        });
     }
-});
+
+    function setPrimary(id) {
+        postJson('setPrimary', { image_id: id, property_id: propertyId }).then(function (data) {
+            if (data.success) { reload(); setMessage('Primary photo updated.', false); }
+            else { setMessage(data.error || data.message || 'Failed to set primary photo', true); }
+        });
+    }
+
+    function editCaption(img) {
+        var caption = window.prompt('Caption for this photo', img.caption || '');
+        if (caption === null) { return; }
+        postJson('updateCaption', { image_id: img.id, caption: caption }).then(function (data) {
+            if (data.success) { reload(); }
+            else { setMessage(data.error || data.message || 'Failed to save caption', true); }
+        });
+    }
+
+    function removeImage(id) {
+        if (!window.confirm('Delete this photo?')) { return; }
+        postJson('deleteImage/' + id, {}).then(function (data) {
+            if (data.success) { reload(); setMessage('Photo deleted.', false); }
+            else { setMessage(data.error || data.message || 'Failed to delete photo', true); }
+        });
+    }
+
+    function open(index) {
+        if (!images.length) { return; }
+        current = (index + images.length) % images.length;
+        lbImg.src = images[current].url;
+        lbImg.alt = images[current].caption || images[current].file_name;
+        lbCaption.textContent = images[current].caption || images[current].file_name;
+        lightbox.hidden = false;
+    }
+
+    function close() { lightbox.hidden = true; lbImg.src = ''; }
+
+    lightbox.querySelector('.pg-lb-close').addEventListener('click', close);
+    lightbox.querySelector('.pg-lb-prev').addEventListener('click', function (e) { e.stopPropagation(); open(current - 1); });
+    lightbox.querySelector('.pg-lb-next').addEventListener('click', function (e) { e.stopPropagation(); open(current + 1); });
+    lightbox.addEventListener('click', function (e) { if (e.target === lightbox) { close(); } });
+    document.addEventListener('keydown', function (e) {
+        if (lightbox.hidden) { return; }
+        if (e.key === 'Escape') { close(); }
+        else if (e.key === 'ArrowLeft') { open(current - 1); }
+        else if (e.key === 'ArrowRight') { open(current + 1); }
+    });
+
+    var form = document.getElementById('pg-upload-form');
+    if (form) {
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var input = document.getElementById('pg-files');
+            var btn = document.getElementById('pg-upload-btn');
+            if (!input.files.length) { setMessage('Choose one or more images first.', true); return; }
+            if (input.files.length > 10) { setMessage('You can upload at most 10 images at a time.', true); return; }
+            for (var i = 0; i < input.files.length; i++) {
+                if (input.files[i].size > 5 * 1024 * 1024) { setMessage(input.files[i].name + ' is larger than 5 MB.', true); return; }
+            }
+            btn.disabled = true;
+            setMessage('Uploading...', false);
+            api('upload/' + propertyId, { method: 'POST', body: new FormData(form) }).then(function (data) {
+                var text = data.uploaded ? ('Uploaded ' + data.uploaded + ' photo(s).') : '';
+                if (data.errors && data.errors.length) { text += (text ? ' ' : '') + 'Failed: ' + data.errors.join('; '); }
+                if (!text) { text = data.error || data.message || 'Upload failed'; }
+                setMessage(text, !data.uploaded);
+                form.reset();
+                return reload();
+            }).catch(function () {
+                setMessage('Upload failed. Please try again.', true);
+            }).then(function () { btn.disabled = false; });
+        });
+    }
+
+    render();
+})();
 </script>

@@ -20,7 +20,8 @@ fail=0
 for path in "$@"; do
   body=$(curl -s -c "$JAR" -b "$JAR" -w $'\n%{http_code}' "$BASE/$path")
   status=${body##*$'\n'}; body=${body%$'\n'*}
-  errs=$(printf '%s' "$body" | grep -oiE '(Fatal error|Parse error|Warning|Notice|Deprecated|Uncaught|Application error|View does not exist)[^<]{0,160}' | head -3)
+  # PHP prints "<b>Warning</b>:" (HTML) or "Warning:" (CLI-style); match those, not CSS classes like badge-warning
+  errs=$(printf '%s' "$body" | grep -oE '(<b>)?(Fatal error|Parse error|Warning|Notice|Deprecated)(</b>)?: [^<]{0,160}|Uncaught [A-Za-z]+[^<]{0,120}|Application error|View does not exist[^<]{0,80}' | head -3)
   if [ "$status" -ge 400 ] || [ -n "$errs" ]; then fail=1; echo "FAIL $status $path"; [ -n "$errs" ] && printf '     %s\n' "$errs"; else echo "ok   $status $path"; fi
 done
 exit $fail

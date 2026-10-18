@@ -3,61 +3,74 @@
 
 /**
  * SplashEstate CRM - Google Maps Service
- * Standalone Google Maps API integration for geocoding and mapping
+ * Google Maps integration for geocoding and map rendering.
+ *
+ * Without an API key the service is a graceful no-op: isConfigured() is
+ * false, geocoding returns false and no script/map markup is produced.
+ * The API key is only ever written into a page by getMapScript() (the
+ * Maps JavaScript loader, which requires it client-side); server-side
+ * geocoding keeps it on the server.
  */
 
 class GoogleMapsService {
 
     private $apiKey;
     private $geocodeEndpoint = 'https://maps.googleapis.com/maps/api/geocode/json';
-    private $staticMapEndpoint = 'https://maps.googleapis.com/maps/api/staticmap';
+    private $jsEndpoint = 'https://maps.googleapis.com/maps/api/js';
+    private $timeout = 8;
+    private $connectTimeout = 4;
 
     /**
-     * Constructor
-     * @param string $apiKey Google Maps API key
+     * @param string|null $apiKey Google Maps API key (defaults to GOOGLE_MAPS_API_KEY)
      */
     public function __construct($apiKey = null) {
-        $this->apiKey = $apiKey ?: (defined('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : '');
-
-        if (empty($this->apiKey)) {
-            throw new Exception('Google Maps API key is required');
+        if ($apiKey === null || $apiKey === '') {
+            $apiKey = defined('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : '';
         }
+        $this->apiKey = trim((string)$apiKey);
+    }
+
+    /**
+     * Whether an API key is available
+     * @return bool
+     */
+    public function isConfigured() {
+        return $this->apiKey !== '';
     }
 
     /**
      * Geocode an address to get latitude and longitude
      * @param string $address Full address string
-     * @return array|false Array with lat/lng or false on failure
+     * @return array|false array(latitude, longitude, formatted_address, place_id) or false
      */
     public function geocodeAddress($address) {
-        if (empty($address)) {
+        $address = trim((string)$address);
+        if (!$this->isConfigured() || $address === '' || trim($address, ' ,') === '') {
             return false;
         }
 
-        $url = $this->geocodeEndpoint . '?' . http_build_query(array(
+        // http_build_query() URL-encodes every value
+        $data = $this->requestJson($this->geocodeEndpoint . '?' . http_build_query(array(
             'address' => $address,
             'key' => $this->apiKey
-        ));
-
-        $response = $this->makeRequest($url);
-
-        if (!$response) {
-            return false;
-        }
-
-        $data = json_decode($response, true);
-
-        if ($data['status'] !== 'OK' || empty($data['results'])) {
-            error_log('Geocoding failed: ' . $data['status']);
+        )));
+        if ($data === false) {
             return false;
         }
 
         $result = $data['results'][0];
-        $location = $result['geometry']['location'];
+        if (!isset($result['geometry']['location']['lat'], $result['geometry']['location']['lng'])) {
+            return false;
+        }
+        $lat = $result['geometry']['location']['lat'];
+        $lng = $result['geometry']['location']['lng'];
+        if (!self::isValidCoordinate($lat, $lng)) {
+            return false;
+        }
 
         return array(
-            'latitude' => $location['lat'],
-            'longitude' => $location['lng'],
+            'latitude' => (float)$lat,
+            'longitude' => (float)$lng,
             'formatted_address' => isset($result['formatted_address']) ? $result['formatted_address'] : $address,
             'place_id' => isset($result['place_id']) ? $result['place_id'] : null
         );
@@ -70,30 +83,19 @@ class GoogleMapsService {
      * @return array|false Address components or false
      */
     public function reverseGeocode($lat, $lng) {
-        if (empty($lat) || empty($lng)) {
+        if (!$this->isConfigured() || !self::isValidCoordinate($lat, $lng)) {
             return false;
         }
 
-        $url = $this->geocodeEndpoint . '?' . http_build_query(array(
-            'latlng' => $lat . ',' . $lng,
+        $data = $this->requestJson($this->geocodeEndpoint . '?' . http_build_query(array(
+            'latlng' => (float)$lat . ',' . (float)$lng,
             'key' => $this->apiKey
-        ));
-
-        $response = $this->makeRequest($url);
-
-        if (!$response) {
-            return false;
-        }
-
-        $data = json_decode($response, true);
-
-        if ($data['status'] !== 'OK' || empty($data['results'])) {
-            error_log('Reverse geocoding failed: ' . $data['status']);
+        )));
+        if ($data === false) {
             return false;
         }
 
         $result = $data['results'][0];
-
         return array(
             'formatted_address' => isset($result['formatted_address']) ? $result['formatted_address'] : '',
             'address_components' => isset($result['address_components']) ? $result['address_components'] : array(),
@@ -102,87 +104,61 @@ class GoogleMapsService {
     }
 
     /**
-     * Get static map image URL
-     * @param array $params Map parameters
-     * @return string Map image URL
-     */
-    public function getStaticMapUrl($params) {
-        $defaults = array(
-            'size' => '600x400',
-            'zoom' => 15,
-            'maptype' => 'roadmap',
-            'key' => $this->apiKey
-        );
-
-        $params = array_merge($defaults, $params);
-
-        // Add marker if coordinates provided
-        if (isset($params['lat']) && isset($params['lng'])) {
-            $params['markers'] = 'color:red|' . $params['lat'] . ',' . $params['lng'];
-            unset($params['lat'], $params['lng']);
-        }
-
-        return $this->staticMapEndpoint . '?' . http_build_query($params);
-    }
-
-    /**
-     * Get embed map HTML
-     * @param float $lat Latitude
-     * @param float $lng Longitude
-     * @param array $options Map options
-     * @return string HTML for embedded map
-     */
-    public function getEmbedMap($lat, $lng, $options = array()) {
-        $defaults = array(
-            'width' => '100%',
-            'height' => '400px',
-            'zoom' => 15
-        );
-
-        $options = array_merge($defaults, $options);
-
-        $mapId = 'map_' . uniqid();
-
-        $html = '<div id="' . $mapId . '" style="width: ' . $options['width'] . '; height: ' . $options['height'] . ';"></div>';
-        $html .= '<script>';
-        $html .= 'function initMap_' . $mapId . '() {';
-        $html .= '  var location = {lat: ' . $lat . ', lng: ' . $lng . '};';
-        $html .= '  var map = new google.maps.Map(document.getElementById("' . $mapId . '"), {';
-        $html .= '    zoom: ' . $options['zoom'] . ',';
-        $html .= '    center: location';
-        $html .= '  });';
-        $html .= '  var marker = new google.maps.Marker({';
-        $html .= '    position: location,';
-        $html .= '    map: map';
-        $html .= '  });';
-        $html .= '}';
-        $html .= 'if (typeof google !== "undefined") { initMap_' . $mapId . '(); }';
-        $html .= '</script>';
-
-        return $html;
-    }
-
-    /**
-     * Get map script tag
-     * @param string $callback Optional callback function name
-     * @return string Script tag for Google Maps JS API
+     * Script tag for the Google Maps JavaScript API (the only place the key is
+     * written into a page; restrict the key by HTTP referrer in Google Cloud).
+     * @param string|null $callback Global JS function name to call when loaded
+     * @return string HTML ('' when not configured)
      */
     public function getMapScript($callback = null) {
-        $url = 'https://maps.googleapis.com/maps/api/js?key=' . $this->apiKey;
-
-        if ($callback) {
-            $url .= '&callback=' . $callback;
+        if (!$this->isConfigured()) {
+            return '';
         }
+        $query = array('key' => $this->apiKey, 'loading' => 'async');
+        if ($callback !== null && preg_match('/^[A-Za-z_$][A-Za-z0-9_$.]*$/', $callback)) {
+            $query['callback'] = $callback;
+        }
+        $url = $this->jsEndpoint . '?' . http_build_query($query);
+        return '<script src="' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '" async defer></script>';
+    }
 
-        return '<script src="' . $url . '" async defer></script>';
+    /**
+     * Public Google Maps search link for an address (no API key needed)
+     * @param string $query Address or "lat,lng"
+     * @return string URL
+     */
+    public static function searchUrl($query) {
+        return 'https://www.google.com/maps/search/?' . http_build_query(array('api' => 1, 'query' => (string)$query));
+    }
+
+    /**
+     * Public Google Maps directions link (no API key needed)
+     * @param string $destination Address or "lat,lng"
+     * @return string URL
+     */
+    public static function directionsUrl($destination) {
+        return 'https://www.google.com/maps/dir/?' . http_build_query(array('api' => 1, 'destination' => (string)$destination));
+    }
+
+    /**
+     * Whether a latitude/longitude pair is valid (0,0 is treated as "unset")
+     * @param mixed $lat
+     * @param mixed $lng
+     * @return bool
+     */
+    public static function isValidCoordinate($lat, $lng) {
+        if (!is_numeric($lat) || !is_numeric($lng)) {
+            return false;
+        }
+        $lat = (float)$lat;
+        $lng = (float)$lng;
+        if ($lat == 0.0 && $lng == 0.0) {
+            return false;
+        }
+        return $lat >= -90 && $lat <= 90 && $lng >= -180 && $lng <= 180;
     }
 
     /**
      * Calculate distance between two coordinates (in kilometers)
-     * @param float $lat1 Latitude of point 1
-     * @param float $lng1 Longitude of point 1
-     * @param float $lat2 Latitude of point 2
-     * @param float $lng2 Longitude of point 2
      * @return float Distance in kilometers
      */
     public function calculateDistance($lat1, $lng1, $lat2, $lng2) {
@@ -205,58 +181,14 @@ class GoogleMapsService {
      * @return array Test result
      */
     public function testConnection() {
-        try {
-            $result = $this->geocodeAddress('1600 Amphitheatre Parkway, Mountain View, CA');
-
-            if ($result && isset($result['latitude'])) {
-                return array(
-                    'success' => true,
-                    'message' => 'Google Maps API connection successful'
-                );
-            } else {
-                return array(
-                    'success' => false,
-                    'message' => 'Failed to geocode test address'
-                );
-            }
-        } catch (Exception $e) {
-            return array(
-                'success' => false,
-                'message' => $e->getMessage()
-            );
+        if (!$this->isConfigured()) {
+            return array('success' => false, 'message' => 'Google Maps API key is not configured');
         }
-    }
-
-    /**
-     * Make HTTP request to Google Maps API
-     * @param string $url Request URL
-     * @return string|false Response body or false
-     */
-    private function makeRequest($url) {
-        $ch = curl_init();
-
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-
-        $response = curl_exec($ch);
-        $error = curl_error($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-
-        curl_close($ch);
-
-        if ($error) {
-            error_log('Google Maps API request failed: ' . $error);
-            return false;
+        $result = $this->geocodeAddress('1600 Amphitheatre Parkway, Mountain View, CA');
+        if ($result && isset($result['latitude'])) {
+            return array('success' => true, 'message' => 'Google Maps API connection successful');
         }
-
-        if ($httpCode !== 200) {
-            error_log('Google Maps API returned HTTP ' . $httpCode);
-            return false;
-        }
-
-        return $response;
+        return array('success' => false, 'message' => 'Failed to geocode test address');
     }
 
     /**
@@ -274,26 +206,108 @@ class GoogleMapsService {
             'postal_code' => ''
         );
 
-        foreach ($addressComponents as $component) {
-            $types = $component['types'];
+        foreach ((array)$addressComponents as $component) {
+            $types = isset($component['types']) ? (array)$component['types'] : array();
+            $long = isset($component['long_name']) ? $component['long_name'] : '';
+            $short = isset($component['short_name']) ? $component['short_name'] : $long;
 
             if (in_array('street_number', $types)) {
-                $parsed['street_number'] = $component['long_name'];
+                $parsed['street_number'] = $long;
             } elseif (in_array('route', $types)) {
-                $parsed['route'] = $component['long_name'];
+                $parsed['route'] = $long;
             } elseif (in_array('locality', $types)) {
-                $parsed['city'] = $component['long_name'];
+                $parsed['city'] = $long;
             } elseif (in_array('administrative_area_level_1', $types)) {
-                $parsed['state'] = $component['short_name'];
+                $parsed['state'] = $short;
             } elseif (in_array('country', $types)) {
-                $parsed['country'] = $component['long_name'];
+                $parsed['country'] = $long;
             } elseif (in_array('postal_code', $types)) {
-                $parsed['postal_code'] = $component['long_name'];
+                $parsed['postal_code'] = $long;
             }
         }
 
         $parsed['address'] = trim($parsed['street_number'] . ' ' . $parsed['route']);
 
         return $parsed;
+    }
+
+    /**
+     * GET a Geocoding API URL and return the decoded body when status is OK
+     * with at least one result. Never throws; failures are logged without the key.
+     * @param string $url
+     * @return array|false
+     */
+    private function requestJson($url) {
+        $body = $this->makeRequest($url);
+        if ($body === false) {
+            return false;
+        }
+        $data = json_decode($body, true);
+        if (!is_array($data) || !isset($data['status'])) {
+            error_log('Google Maps API: invalid JSON response');
+            return false;
+        }
+        if ($data['status'] !== 'OK' || empty($data['results']) || !is_array($data['results'])) {
+            // ZERO_RESULTS is a normal outcome; other statuses indicate a config problem
+            if ($data['status'] !== 'ZERO_RESULTS') {
+                $message = isset($data['error_message']) ? ' - ' . $data['error_message'] : '';
+                error_log('Google Maps API status ' . $data['status'] . $message);
+            }
+            return false;
+        }
+        return $data;
+    }
+
+    /**
+     * Make HTTP GET request with short timeouts
+     * @param string $url Request URL
+     * @return string|false Response body or false
+     */
+    private function makeRequest($url) {
+        if (function_exists('curl_init')) {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->connectTimeout);
+            curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+
+            $response = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $error = curl_error($ch);
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if (PHP_VERSION_ID < 80000) {
+                curl_close($ch); // no-op (and deprecated) on PHP 8+
+            }
+
+            if ($errno !== 0 || $response === false) {
+                error_log('Google Maps API request failed: ' . $error);
+                return false;
+            }
+        } else {
+            $context = stream_context_create(array('http' => array(
+                'method' => 'GET',
+                'timeout' => $this->timeout,
+                'ignore_errors' => true
+            )));
+            $response = @file_get_contents($url, false, $context);
+            $httpCode = 0;
+            if (isset($http_response_header[0]) && preg_match('/\s(\d{3})\s?/', $http_response_header[0], $m)) {
+                $httpCode = (int)$m[1];
+            }
+            if ($response === false) {
+                error_log('Google Maps API request failed (stream)');
+                return false;
+            }
+        }
+
+        if ($httpCode !== 200) {
+            error_log('Google Maps API returned HTTP ' . $httpCode);
+            return false;
+        }
+
+        return $response;
     }
 }

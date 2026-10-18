@@ -826,8 +826,8 @@ INSERT INTO `tenants` (`name`, `slug`, `email`, `phone`, `address`, `api_key`, `
 
 -- Insert tenant subscriptions
 INSERT INTO `tenant_subscriptions` (`tenant_id`, `plan_id`, `status`, `start_date`, `end_date`, `auto_renew`) VALUES
-(1, 2, 'active', '2025-01-01', '2025-12-31', 1),
-(2, 3, 'active', '2025-01-01', '2025-12-31', 1);
+(1, 2, 'active', '2025-01-01', NULL, 1),
+(2, 3, 'active', '2025-01-01', NULL, 1);
 
 -- Insert demo users/agents for Sunset Realty
 -- Password for all: agent123

@@ -3,57 +3,69 @@
 
 /**
  * SplashEstate CRM - Webhook Model
- * Manages webhook configurations
+ * Manages outgoing webhook endpoint configurations (tenant scoped).
+ *
+ * The `events` column stores a comma-separated list of event names
+ * (e.g. "lead.created,deal.won") or "*" for every event.
  */
 
 class Webhook extends Model {
 
     protected $table = 'webhooks';
 
+    /** Columns that may be written through create()/update() */
+    private static $writable = array('tenant_id', 'name', 'url', 'secret', 'events', 'status', 'retry_enabled', 'max_retries', 'created_by');
+
     /**
-     * Get all webhooks for a tenant
+     * Get every webhook of a tenant with its creator and delivery statistics
      * @param int $tenantId Tenant ID
      * @return array Webhooks
      */
-    public function getAll($tenantId) {
-        $sql = "SELECT w.*, u.first_name, u.last_name
+    public function getAllWithStats($tenantId) {
+        $sql = "SELECT w.*, u.first_name, u.last_name,
+                       COUNT(wl.id) AS total_deliveries,
+                       COALESCE(SUM(wl.status = 'success'), 0) AS successful,
+                       COALESCE(SUM(wl.status = 'failed'), 0) AS failed,
+                       MAX(wl.created_at) AS last_attempt
                 FROM {$this->table} w
                 LEFT JOIN users u ON w.created_by = u.id
+                LEFT JOIN webhook_logs wl ON wl.webhook_id = w.id
                 WHERE w.tenant_id = :tenant_id
+                GROUP BY w.id
                 ORDER BY w.created_at DESC";
 
         $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
+        $stmt->bindValue(':tenant_id', (int)$tenantId, PDO::PARAM_INT);
         $stmt->execute();
 
         return $stmt->fetchAll();
     }
 
     /**
-     * Get active webhooks for a tenant and event
+     * Get active webhooks of a tenant subscribed to an event (exact name or "*")
      * @param int $tenantId Tenant ID
      * @param string $eventType Event type
      * @return array Active webhooks
      */
     public function getActiveForEvent($tenantId, $eventType) {
+        // FIND_IN_SET matches whole list items only, so "lead.created" never
+        // matches "lead.created_x"; the PHP filter below also tolerates spaces.
         $sql = "SELECT * FROM {$this->table}
                 WHERE tenant_id = :tenant_id
                 AND status = 'active'
-                AND (events LIKE :event_exact OR events LIKE :event_wildcard)";
+                AND (FIND_IN_SET(:event_type, REPLACE(events, ' ', '')) > 0
+                     OR FIND_IN_SET('*', REPLACE(events, ' ', '')) > 0)
+                ORDER BY id ASC";
 
         $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $stmt->bindValue(':event_exact', '%' . $eventType . '%');
-        $stmt->bindValue(':event_wildcard', '%*%');
+        $stmt->bindValue(':tenant_id', (int)$tenantId, PDO::PARAM_INT);
+        $stmt->bindValue(':event_type', (string)$eventType);
         $stmt->execute();
 
-        $webhooks = $stmt->fetchAll();
-
-        // Filter to ensure exact match or wildcard
         $filtered = array();
-        foreach ($webhooks as $webhook) {
-            $events = array_map('trim', explode(',', $webhook['events']));
-            if (in_array($eventType, $events) || in_array('*', $events)) {
+        foreach ($stmt->fetchAll() as $webhook) {
+            $events = self::parseEvents($webhook['events']);
+            if (in_array($eventType, $events, true) || in_array('*', $events, true)) {
                 $filtered[] = $webhook;
             }
         }
@@ -62,145 +74,56 @@ class Webhook extends Model {
     }
 
     /**
-     * Get webhook by ID
-     * @param int $id Webhook ID
-     * @param int $tenantId Tenant ID
-     * @return array|false Webhook data
-     */
-    public function getById($id, $tenantId) {
-        $sql = "SELECT * FROM {$this->table}
-                WHERE id = :id AND tenant_id = :tenant_id
-                LIMIT 1";
-
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
-        $stmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $stmt->execute();
-
-        return $stmt->fetch();
-    }
-
-    /**
      * Create webhook
      * @param array $data Webhook data
      * @return int|false Webhook ID
      */
     public function create($data) {
-        $sql = "INSERT INTO {$this->table}
-                (tenant_id, name, url, secret, events, status, retry_enabled, max_retries, created_by, created_at)
-                VALUES
-                (:tenant_id, :name, :url, :secret, :events, :status, :retry_enabled, :max_retries, :created_by, NOW())";
-
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':tenant_id', $data['tenant_id'], PDO::PARAM_INT);
-        $stmt->bindValue(':name', $data['name']);
-        $stmt->bindValue(':url', $data['url']);
-        $stmt->bindValue(':secret', isset($data['secret']) ? $data['secret'] : null);
-        $stmt->bindValue(':events', $data['events']);
-        $stmt->bindValue(':status', isset($data['status']) ? $data['status'] : 'active');
-        $stmt->bindValue(':retry_enabled', isset($data['retry_enabled']) ? $data['retry_enabled'] : 1, PDO::PARAM_INT);
-        $stmt->bindValue(':max_retries', isset($data['max_retries']) ? $data['max_retries'] : 3, PDO::PARAM_INT);
-        $stmt->bindValue(':created_by', isset($data['created_by']) ? $data['created_by'] : null, PDO::PARAM_INT);
-
-        if ($stmt->execute()) {
-            return $this->conn->lastInsertId();
-        }
-
-        return false;
+        $row = array_intersect_key($data, array_flip(self::$writable));
+        $row += array(
+            'status' => 'active',
+            'retry_enabled' => 1,
+            'max_retries' => 3
+        );
+        return parent::create($row);
     }
 
     /**
-     * Update webhook
+     * Update webhook (tenant scoped)
      * @param int $id Webhook ID
      * @param int $tenantId Tenant ID
      * @param array $data Update data
      * @return bool Success
      */
     public function update($id, $tenantId, $data) {
-        $fields = array();
-        $params = array(':id' => $id, ':tenant_id' => $tenantId);
-
-        if (isset($data['name'])) {
-            $fields[] = "name = :name";
-            $params[':name'] = $data['name'];
-        }
-        if (isset($data['url'])) {
-            $fields[] = "url = :url";
-            $params[':url'] = $data['url'];
-        }
-        if (isset($data['secret'])) {
-            $fields[] = "secret = :secret";
-            $params[':secret'] = $data['secret'];
-        }
-        if (isset($data['events'])) {
-            $fields[] = "events = :events";
-            $params[':events'] = $data['events'];
-        }
-        if (isset($data['status'])) {
-            $fields[] = "status = :status";
-            $params[':status'] = $data['status'];
-        }
-        if (isset($data['retry_enabled'])) {
-            $fields[] = "retry_enabled = :retry_enabled";
-            $params[':retry_enabled'] = $data['retry_enabled'];
-        }
-        if (isset($data['max_retries'])) {
-            $fields[] = "max_retries = :max_retries";
-            $params[':max_retries'] = $data['max_retries'];
-        }
-
-        if (empty($fields)) {
-            return false;
-        }
-
-        $sql = "UPDATE {$this->table}
-                SET " . implode(', ', $fields) . ", updated_at = NOW()
-                WHERE id = :id AND tenant_id = :tenant_id";
-
-        $stmt = $this->conn->prepare($sql);
-        return $stmt->execute($params);
+        $row = array_intersect_key($data, array_flip(self::$writable));
+        unset($row['tenant_id'], $row['created_by']);
+        return parent::update($id, $tenantId, $row);
     }
 
     /**
-     * Delete webhook
-     * @param int $id Webhook ID
-     * @param int $tenantId Tenant ID
-     * @return bool Success
-     */
-    public function delete($id, $tenantId) {
-        $sql = "DELETE FROM {$this->table}
-                WHERE id = :id AND tenant_id = :tenant_id";
-
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
-        $stmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
-
-        return $stmt->execute();
-    }
-
-    /**
-     * Get webhook statistics
+     * Get delivery statistics for one webhook
      * @param int $webhookId Webhook ID
      * @return array Statistics
      */
     public function getStats($webhookId) {
         $sql = "SELECT
-                    COUNT(*) as total_deliveries,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                    MAX(delivered_at) as last_delivery
+                    COUNT(*) AS total_deliveries,
+                    COALESCE(SUM(status = 'success'), 0) AS successful,
+                    COALESCE(SUM(status = 'failed'), 0) AS failed,
+                    MAX(delivered_at) AS last_delivery
                 FROM webhook_logs
                 WHERE webhook_id = :webhook_id";
 
         $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':webhook_id', $webhookId, PDO::PARAM_INT);
+        $stmt->bindValue(':webhook_id', (int)$webhookId, PDO::PARAM_INT);
         $stmt->execute();
 
         return $stmt->fetch();
     }
 
     /**
-     * Generate random webhook secret
+     * Generate a random signing secret (fits the varchar(64) column)
      * @return string Secret
      */
     public function generateSecret() {
@@ -208,26 +131,80 @@ class Webhook extends Model {
     }
 
     /**
-     * Get available event types
+     * Mask a secret for display ("whsec_1a2b…9z")
+     * @param string|null $secret Secret
+     * @return string
+     */
+    public static function maskSecret($secret) {
+        $secret = (string)$secret;
+        if ($secret === '') {
+            return '';
+        }
+        if (strlen($secret) <= 12) {
+            return str_repeat('•', 8);
+        }
+        return substr($secret, 0, 10) . str_repeat('•', 8) . substr($secret, -4);
+    }
+
+    /**
+     * Get available event types (same names as dispatchEvent())
      * @return array Event types with descriptions
      */
     public function getAvailableEvents() {
         return array(
-            'lead.created' => 'New lead created',
+            '*' => 'All events',
+            'lead.created' => 'Lead created',
             'lead.updated' => 'Lead updated',
+            'lead.status_changed' => 'Lead status changed',
             'lead.deleted' => 'Lead deleted',
-            'client.created' => 'New client created',
+            'client.created' => 'Client created',
             'client.updated' => 'Client updated',
-            'property.created' => 'New property listed',
+            'client.deleted' => 'Client deleted',
+            'property.created' => 'Property listed',
             'property.updated' => 'Property updated',
             'property.deleted' => 'Property removed',
-            'deal.created' => 'New deal created',
-            'deal.updated' => 'Deal status changed',
+            'deal.created' => 'Deal created',
+            'deal.updated' => 'Deal updated',
+            'deal.stage_changed' => 'Deal stage changed',
             'deal.won' => 'Deal won',
             'deal.lost' => 'Deal lost',
-            'task.created' => 'New task created',
+            'deal.deleted' => 'Deal deleted',
+            'task.created' => 'Task created',
+            'task.updated' => 'Task updated',
             'task.completed' => 'Task completed',
-            '*' => 'All events'
+            'workflow.triggered' => 'Workflow "Send webhook" action',
+            'task.deleted' => 'Task deleted'
         );
+    }
+
+    /**
+     * Keep only known event names; "*" supersedes everything else
+     * @param array $events Submitted event names
+     * @return string Comma-separated list ('' when none are valid)
+     */
+    public function normalizeEvents($events) {
+        if (!is_array($events)) {
+            return '';
+        }
+        $available = $this->getAvailableEvents();
+        $clean = array();
+        foreach ($events as $event) {
+            if (is_string($event) && isset($available[$event]) && !in_array($event, $clean, true)) {
+                $clean[] = $event;
+            }
+        }
+        if (in_array('*', $clean, true)) {
+            return '*';
+        }
+        return implode(',', $clean);
+    }
+
+    /**
+     * Split a stored events list into an array
+     * @param string $events Comma-separated events
+     * @return array
+     */
+    public static function parseEvents($events) {
+        return array_values(array_filter(array_map('trim', explode(',', (string)$events)), 'strlen'));
     }
 }

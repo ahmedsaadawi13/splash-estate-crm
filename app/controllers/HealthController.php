@@ -3,219 +3,230 @@
 
 /**
  * SplashEstate CRM - Health Check Controller
- * Provides health check and system status endpoints for monitoring
+ *
+ * Public endpoints (no sensitive details):
+ *   GET /health          basic status (200 healthy / 503 when the database is down)
+ *   GET /health/alive    liveness (process is up)
+ *   GET /health/ready    readiness (database reachable, storage writable)
+ *
+ * Protected endpoint:
+ *   GET /health/detailed full diagnostics. Requires a logged-in platform admin,
+ *   or the HEALTH_TOKEN constant (from .env) sent as "Authorization: Bearer <token>"
+ *   or "X-Health-Token: <token>".
  */
 
 class HealthController extends Controller {
 
     /**
-     * Basic health check endpoint
-     * Returns 200 OK if application is running
+     * Basic health check
      */
     public function index() {
+        $this->noCache();
+        $db = $this->checkDatabase();
+        $healthy = $db['healthy'];
+
         $this->jsonResponse(array(
-            'status' => 'healthy',
-            'timestamp' => time(),
-            'version' => '1.0.0'
-        ));
+            'status' => $healthy ? 'healthy' : 'unhealthy',
+            'timestamp' => time()
+        ), $healthy ? 200 : 503);
     }
 
     /**
-     * Detailed health check with system diagnostics
-     * Checks database, filesystem, and critical services
+     * Detailed diagnostics (platform admin or HEALTH_TOKEN only)
      */
     public function detailed() {
-        $checks = array();
-        $overallStatus = 'healthy';
+        $this->noCache();
+        if (!$this->isAuthorizedForDetails()) {
+            $this->jsonResponse(array('status' => 'forbidden', 'message' => 'Detailed health information requires authorization'), 403);
+        }
 
-        // Database check
-        $dbCheck = $this->checkDatabase();
-        $checks['database'] = $dbCheck;
-        if (!$dbCheck['healthy']) $overallStatus = 'unhealthy';
+        $checks = array(
+            'database' => $this->checkDatabase(true),
+            'filesystem' => $this->checkFilesystem(true),
+            'configuration' => $this->checkConfiguration(),
+            'php' => $this->checkPHP(),
+            'migrations' => $this->checkMigrations(),
+            'external_services' => $this->checkExternalServices()
+        );
 
-        // Filesystem check
-        $fsCheck = $this->checkFilesystem();
-        $checks['filesystem'] = $fsCheck;
-        if (!$fsCheck['healthy']) $overallStatus = 'degraded';
+        $status = 'healthy';
+        if (!$checks['database']['healthy']) {
+            $status = 'unhealthy';
+        } elseif (!$checks['filesystem']['healthy'] || !$checks['configuration']['healthy'] || !$checks['php']['healthy'] || !$checks['migrations']['healthy']) {
+            $status = 'degraded';
+        }
 
-        // Configuration check
-        $configCheck = $this->checkConfiguration();
-        $checks['configuration'] = $configCheck;
-        if (!$configCheck['healthy']) $overallStatus = 'degraded';
-
-        // PHP environment check
-        $phpCheck = $this->checkPHP();
-        $checks['php'] = $phpCheck;
-
-        // External services check
-        $servicesCheck = $this->checkExternalServices();
-        $checks['external_services'] = $servicesCheck;
-
-        $response = array(
-            'status' => $overallStatus,
+        $this->jsonResponse(array(
+            'status' => $status,
             'timestamp' => time(),
-            'version' => '1.0.0',
             'checks' => $checks,
             'system' => array(
                 'php_version' => PHP_VERSION,
-                'server_software' => isset($_SERVER['SERVER_SOFTWARE']) ? $_SERVER['SERVER_SOFTWARE'] : 'Unknown',
-                'environment' => defined('APP_ENV') ? APP_ENV : 'Unknown'
+                'environment' => defined('APP_ENV') ? APP_ENV : 'unknown',
+                'debug' => defined('APP_DEBUG') && APP_DEBUG ? true : false,
+                'timezone' => date_default_timezone_get()
             )
-        );
-
-        $httpCode = $overallStatus === 'healthy' ? 200 : ($overallStatus === 'degraded' ? 200 : 503);
-
-        $this->jsonResponse($response, $httpCode);
+        ), $status === 'unhealthy' ? 503 : 200);
     }
 
     /**
-     * Check database connectivity
+     * Readiness check
      */
-    private function checkDatabase() {
+    public function ready() {
+        $this->noCache();
+        $db = $this->checkDatabase();
+        $fs = $this->checkFilesystem();
+        $ready = $db['healthy'] && $fs['healthy'];
+
+        $this->jsonResponse(array(
+            'ready' => $ready,
+            'timestamp' => time(),
+            'checks' => array('database' => $db['healthy'], 'filesystem' => $fs['healthy'])
+        ), $ready ? 200 : 503);
+    }
+
+    /**
+     * Liveness check
+     */
+    public function alive() {
+        $this->noCache();
+        $this->jsonResponse(array('alive' => true, 'timestamp' => time()));
+    }
+
+    /**
+     * Platform admin session, or a matching HEALTH_TOKEN
+     */
+    private function isAuthorizedForDetails() {
+        if ($this->getUserRole() === 'platform_admin') {
+            return true;
+        }
+        if (!defined('HEALTH_TOKEN') || !is_string(HEALTH_TOKEN) || strlen(HEALTH_TOKEN) < 16) {
+            return false;
+        }
+        $provided = '';
+        if (!empty($_SERVER['HTTP_X_HEALTH_TOKEN'])) {
+            $provided = (string)$_SERVER['HTTP_X_HEALTH_TOKEN'];
+        } elseif (!empty($_SERVER['HTTP_AUTHORIZATION']) && stripos($_SERVER['HTTP_AUTHORIZATION'], 'Bearer ') === 0) {
+            $provided = trim(substr($_SERVER['HTTP_AUTHORIZATION'], 7));
+        }
+        return $provided !== '' && hash_equals(HEALTH_TOKEN, $provided);
+    }
+
+    /**
+     * Database connectivity
+     */
+    private function checkDatabase($withDetails = false) {
         try {
-            $db = Database::getInstance();
-            $conn = $db->getConnection();
-
-            // Test query
-            $stmt = $conn->query('SELECT 1');
-            $result = $stmt->fetch();
-
-            if ($result) {
-                return array(
-                    'healthy' => true,
-                    'message' => 'Database connection successful',
-                    'details' => array(
-                        'host' => defined('DB_HOST') ? DB_HOST : 'Unknown',
-                        'database' => defined('DB_NAME') ? DB_NAME : 'Unknown'
-                    )
-                );
-            } else {
-                return array(
-                    'healthy' => false,
-                    'message' => 'Database query failed'
-                );
-            }
-        } catch (Exception $e) {
-            return array(
-                'healthy' => false,
-                'message' => 'Database connection failed',
-                'error' => $e->getMessage()
+            $conn = Database::getInstance()->getConnection();
+            $started = microtime(true);
+            $ok = (int)$conn->query('SELECT 1')->fetchColumn() === 1;
+            $result = array(
+                'healthy' => $ok,
+                'message' => $ok ? 'Database connection successful' : 'Database query failed'
             );
+            if ($withDetails) {
+                $result['latency_ms'] = round((microtime(true) - $started) * 1000, 2);
+                $result['server_version'] = (string)$conn->getAttribute(PDO::ATTR_SERVER_VERSION);
+            }
+            return $result;
+        } catch (Throwable $e) {
+            error_log('Health check: database error: ' . $e->getMessage());
+            return array('healthy' => false, 'message' => 'Database connection failed');
         }
     }
 
     /**
-     * Check filesystem permissions and writability
+     * Writable storage directories and disk space
      */
-    private function checkFilesystem() {
-        $checks = array();
+    private function checkFilesystem($withDetails = false) {
+        $details = array();
         $healthy = true;
 
-        // Check storage directory
-        if (is_dir(STORAGE_PATH) && is_writable(STORAGE_PATH)) {
-            $checks['storage'] = 'writable';
-        } else {
-            $checks['storage'] = 'not writable';
-            $healthy = false;
-        }
-
-        // Check uploads directory
-        if (is_dir(UPLOAD_PATH) && is_writable(UPLOAD_PATH)) {
-            $checks['uploads'] = 'writable';
-        } else {
-            $checks['uploads'] = 'not writable';
-            $healthy = false;
-        }
-
-        // Check logs directory
-        $logsPath = STORAGE_PATH . '/logs';
-        if (is_dir($logsPath) && is_writable($logsPath)) {
-            $checks['logs'] = 'writable';
-        } else {
-            $checks['logs'] = 'not writable or missing';
-        }
-
-        // Check disk space
-        $diskFree = @disk_free_space(ROOT_PATH);
-        $diskTotal = @disk_total_space(ROOT_PATH);
-
-        if ($diskFree && $diskTotal) {
-            $diskUsedPercent = (($diskTotal - $diskFree) / $diskTotal) * 100;
-            $checks['disk_space'] = array(
-                'free' => $this->formatBytes($diskFree),
-                'total' => $this->formatBytes($diskTotal),
-                'used_percent' => round($diskUsedPercent, 2)
-            );
-
-            if ($diskUsedPercent > 90) {
+        foreach (array('storage' => STORAGE_PATH, 'uploads' => UPLOAD_PATH, 'logs' => STORAGE_PATH . '/logs') as $name => $path) {
+            $writable = is_dir($path) && is_writable($path);
+            $details[$name] = $writable ? 'writable' : 'not writable or missing';
+            if (!$writable && $name !== 'logs') {
                 $healthy = false;
             }
         }
 
-        return array(
+        $diskFree = @disk_free_space(ROOT_PATH);
+        $diskTotal = @disk_total_space(ROOT_PATH);
+        if ($diskFree && $diskTotal) {
+            $usedPercent = (($diskTotal - $diskFree) / $diskTotal) * 100;
+            $details['disk_space'] = array(
+                'free' => $this->formatBytes($diskFree),
+                'total' => $this->formatBytes($diskTotal),
+                'used_percent' => round($usedPercent, 2)
+            );
+            if ($usedPercent > 95) {
+                $healthy = false;
+            }
+        }
+
+        $result = array(
             'healthy' => $healthy,
-            'message' => $healthy ? 'Filesystem checks passed' : 'Some filesystem issues detected',
-            'details' => $checks
+            'message' => $healthy ? 'Filesystem checks passed' : 'Some filesystem issues detected'
         );
+        if ($withDetails) {
+            $result['details'] = $details;
+        }
+        return $result;
     }
 
     /**
-     * Check critical configuration
+     * Critical configuration (reports problems, never values)
      */
     private function checkConfiguration() {
         $issues = array();
-        $healthy = true;
+        $warnings = array();
 
-        // Check .env file
         if (!file_exists(ROOT_PATH . '/.env')) {
-            $issues[] = '.env file missing';
-            $healthy = false;
+            $warnings[] = '.env file missing (using defaults)';
         }
-
-        // Check database configuration
-        if (!defined('DB_HOST') || empty(DB_HOST)) {
-            $issues[] = 'DB_HOST not configured';
-            $healthy = false;
+        foreach (array('DB_HOST', 'DB_NAME', 'DB_USER', 'BASE_URL') as $constant) {
+            if (!defined($constant) || constant($constant) === '' || constant($constant) === null) {
+                $issues[] = $constant . ' not configured';
+            }
         }
-
-        if (!defined('DB_NAME') || empty(DB_NAME)) {
-            $issues[] = 'DB_NAME not configured';
-            $healthy = false;
-        }
-
-        // Check BASE_URL
-        if (!defined('BASE_URL') || empty(BASE_URL)) {
-            $issues[] = 'BASE_URL not configured';
-        }
-
-        return array(
-            'healthy' => $healthy,
-            'message' => $healthy ? 'Configuration valid' : 'Configuration issues found',
-            'issues' => $issues
-        );
-    }
-
-    /**
-     * Check PHP environment and extensions
-     */
-    private function checkPHP() {
-        $requiredExtensions = array('pdo', 'pdo_mysql', 'mbstring', 'curl', 'json');
-        $loadedExtensions = get_loaded_extensions();
-        $missingExtensions = array();
-
-        foreach ($requiredExtensions as $ext) {
-            if (!in_array($ext, $loadedExtensions)) {
-                $missingExtensions[] = $ext;
+        $env = defined('APP_ENV') ? APP_ENV : '';
+        if ($env === 'production') {
+            if (defined('APP_DEBUG') && APP_DEBUG) {
+                $issues[] = 'APP_DEBUG must be false in production';
+            }
+            if (defined('BASE_URL') && stripos(BASE_URL, 'https://') !== 0) {
+                $warnings[] = 'BASE_URL should use https in production';
+            }
+            if (defined('DB_USER') && DB_USER === 'root') {
+                $warnings[] = 'Database user should not be root in production';
             }
         }
 
         return array(
-            'healthy' => empty($missingExtensions),
-            'message' => empty($missingExtensions) ? 'All required extensions loaded' : 'Missing PHP extensions',
+            'healthy' => empty($issues),
+            'message' => empty($issues) ? 'Configuration valid' : 'Configuration issues found',
+            'issues' => $issues,
+            'warnings' => $warnings
+        );
+    }
+
+    /**
+     * PHP version and extensions
+     */
+    private function checkPHP() {
+        $required = array('pdo', 'pdo_mysql', 'mbstring', 'curl', 'json', 'openssl');
+        $missing = array();
+        foreach ($required as $ext) {
+            if (!extension_loaded($ext)) {
+                $missing[] = $ext;
+            }
+        }
+
+        return array(
+            'healthy' => empty($missing) && version_compare(PHP_VERSION, '7.0.0', '>='),
+            'message' => empty($missing) ? 'All required extensions loaded' : 'Missing PHP extensions',
             'details' => array(
-                'version' => PHP_VERSION,
-                'required_extensions' => $requiredExtensions,
-                'missing_extensions' => $missingExtensions,
+                'missing_extensions' => $missing,
                 'memory_limit' => ini_get('memory_limit'),
                 'max_execution_time' => ini_get('max_execution_time'),
                 'upload_max_filesize' => ini_get('upload_max_filesize')
@@ -224,109 +235,63 @@ class HealthController extends Controller {
     }
 
     /**
-     * Check external service connectivity
+     * Pending database migrations
+     */
+    private function checkMigrations() {
+        $dir = ROOT_PATH . '/database/migrations';
+        $files = is_dir($dir) ? glob($dir . '/[0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]_*.php') : array();
+        $names = array_map('basename', $files ?: array());
+
+        try {
+            $conn = Database::getInstance()->getConnection();
+            $exists = $conn->query("SHOW TABLES LIKE 'migrations'")->fetchColumn();
+            $executed = $exists ? $conn->query('SELECT migration FROM migrations')->fetchAll(PDO::FETCH_COLUMN) : array();
+        } catch (Throwable $e) {
+            return array('healthy' => false, 'message' => 'Could not read migration status');
+        }
+
+        $pending = array_values(array_diff($names, $executed));
+        return array(
+            'healthy' => empty($pending),
+            'message' => empty($pending) ? 'Database schema is up to date' : count($pending) . ' pending migration(s): run php migrate.php migrate',
+            'pending' => $pending
+        );
+    }
+
+    /**
+     * Which integrations are configured (never their credentials or hosts)
      */
     private function checkExternalServices() {
-        $services = array();
-
-        // Check Stripe
-        if (defined('STRIPE_SECRET_KEY') && !empty(STRIPE_SECRET_KEY)) {
-            $services['stripe'] = array(
-                'configured' => true,
-                'status' => 'configured'
-            );
-        } else {
-            $services['stripe'] = array(
-                'configured' => false,
-                'status' => 'not configured'
-            );
-        }
-
-        // Check Google Maps
-        if (defined('GOOGLE_MAPS_API_KEY') && !empty(GOOGLE_MAPS_API_KEY)) {
-            $services['google_maps'] = array(
-                'configured' => true,
-                'status' => 'configured'
-            );
-        } else {
-            $services['google_maps'] = array(
-                'configured' => false,
-                'status' => 'not configured'
-            );
-        }
-
-        // Check SMTP
-        if (defined('MAIL_HOST') && !empty(MAIL_HOST) && defined('MAIL_USERNAME') && !empty(MAIL_USERNAME)) {
-            $services['smtp'] = array(
-                'configured' => true,
-                'status' => 'configured',
-                'host' => MAIL_HOST,
-                'port' => defined('MAIL_PORT') ? MAIL_PORT : 'Unknown'
-            );
-        } else {
-            $services['smtp'] = array(
-                'configured' => false,
-                'status' => 'not configured'
-            );
-        }
+        $configured = function ($constant) {
+            return defined($constant) && constant($constant) !== '' && constant($constant) !== null && constant($constant) !== false;
+        };
 
         return array(
             'healthy' => true,
             'message' => 'External services check completed',
-            'details' => $services
+            'details' => array(
+                'stripe' => $configured('STRIPE_SECRET_KEY') ? 'configured' : 'not configured (demo mode)',
+                'stripe_webhook' => $configured('STRIPE_WEBHOOK_SECRET') ? 'configured' : 'not configured',
+                'google_maps' => $configured('GOOGLE_MAPS_API_KEY') ? 'configured' : 'not configured',
+                'mail_driver' => defined('MAIL_DRIVER') ? (string)MAIL_DRIVER : 'log',
+                'smtp' => ($configured('MAIL_HOST') && $configured('MAIL_USERNAME')) ? 'configured' : 'not configured'
+            )
         );
     }
 
+    private function noCache() {
+        header('Cache-Control: no-store, max-age=0');
+    }
+
     /**
-     * Format bytes to human-readable size
+     * Format bytes to a human-readable size
      */
     private function formatBytes($bytes, $precision = 2) {
         $units = array('B', 'KB', 'MB', 'GB', 'TB');
-
         $bytes = max($bytes, 0);
         $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-        $pow = min($pow, count($units) - 1);
-
+        $pow = (int)min($pow, count($units) - 1);
         $bytes /= pow(1024, $pow);
-
         return round($bytes, $precision) . ' ' . $units[$pow];
-    }
-
-    /**
-     * Readiness check
-     * Returns whether the application is ready to serve traffic
-     */
-    public function ready() {
-        $ready = true;
-        $checks = array();
-
-        // Database must be accessible
-        $dbCheck = $this->checkDatabase();
-        $checks['database'] = $dbCheck['healthy'];
-        if (!$dbCheck['healthy']) $ready = false;
-
-        // Critical paths must be writable
-        $fsCheck = $this->checkFilesystem();
-        $checks['filesystem'] = $fsCheck['healthy'];
-        if (!$fsCheck['healthy']) $ready = false;
-
-        $response = array(
-            'ready' => $ready,
-            'timestamp' => time(),
-            'checks' => $checks
-        );
-
-        $this->jsonResponse($response, $ready ? 200 : 503);
-    }
-
-    /**
-     * Liveness check
-     * Simple check to see if the application process is alive
-     */
-    public function alive() {
-        $this->jsonResponse(array(
-            'alive' => true,
-            'timestamp' => time()
-        ));
     }
 }

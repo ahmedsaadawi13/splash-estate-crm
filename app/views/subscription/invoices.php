@@ -1,230 +1,97 @@
 <?php
 // FILE: /app/views/subscription/invoices.php
-include APP_PATH . '/views/layouts/header.php';
+require APP_PATH . '/views/layouts/header.php';
+
+$invoiceBadges = array(
+    'paid' => 'badge-success',
+    'open' => 'badge-warning',
+    'pending' => 'badge-warning',
+    'draft' => 'badge-secondary',
+    'overdue' => 'badge-danger',
+    'void' => 'badge-danger',
+    'uncollectible' => 'badge-danger',
+    'cancelled' => 'badge-secondary'
+);
+$totalPaid = 0;
+$paidCount = 0;
+foreach ($invoices as $invoice) {
+    if ($invoice['status'] === 'paid') {
+        $totalPaid += $invoice['amount'];
+        $paidCount++;
+    }
+}
 ?>
 
-<div class="content-wrapper">
-    <div class="content-header">
+<div class="page-header">
+    <div>
+        <div class="breadcrumb"><a href="<?php echo e(url('subscription/index')); ?>">Subscription</a> / Payment history</div>
         <h1>Payment History</h1>
-        <p>View your billing and invoice history</p>
-        <a href="<?php echo BASE_URL; ?>/subscription/index" class="btn btn-secondary">
-            &larr; Back to Subscription
-        </a>
     </div>
-
-    <div class="card">
-        <div class="card-header">
-            <h2>Invoices</h2>
-        </div>
-        <div class="card-body">
-            <?php if (!empty($invoices)): ?>
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Invoice #</th>
-                                <th>Date</th>
-                                <th>Description</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($invoices as $invoice): ?>
-                                <tr>
-                                    <td>
-                                        <strong><?php echo htmlspecialchars($invoice['number']); ?></strong>
-                                    </td>
-                                    <td>
-                                        <?php echo date('M j, Y', $invoice['created']); ?>
-                                    </td>
-                                    <td>
-                                        <?php
-                                        if (!empty($invoice['lines']['data'])) {
-                                            echo htmlspecialchars($invoice['lines']['data'][0]['description']);
-                                        } else {
-                                            echo 'Subscription Payment';
-                                        }
-                                        ?>
-                                    </td>
-                                    <td>
-                                        <strong>$<?php echo number_format($invoice['amount_paid'] / 100, 2); ?></strong>
-                                    </td>
-                                    <td>
-                                        <?php
-                                        $statusClass = '';
-                                        $statusText = ucfirst($invoice['status']);
-
-                                        switch ($invoice['status']) {
-                                            case 'paid':
-                                                $statusClass = 'success';
-                                                break;
-                                            case 'open':
-                                                $statusClass = 'warning';
-                                                break;
-                                            case 'void':
-                                            case 'uncollectible':
-                                                $statusClass = 'danger';
-                                                break;
-                                            default:
-                                                $statusClass = 'secondary';
-                                        }
-                                        ?>
-                                        <span class="badge badge-<?php echo $statusClass; ?>">
-                                            <?php echo $statusText; ?>
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <?php if ($invoice['invoice_pdf']): ?>
-                                            <a href="<?php echo htmlspecialchars($invoice['invoice_pdf']); ?>"
-                                               target="_blank"
-                                               class="btn btn-sm btn-outline">
-                                                Download PDF
-                                            </a>
-                                        <?php endif; ?>
-                                        <?php if ($invoice['hosted_invoice_url']): ?>
-                                            <a href="<?php echo htmlspecialchars($invoice['hosted_invoice_url']); ?>"
-                                               target="_blank"
-                                               class="btn btn-sm btn-primary">
-                                                View Invoice
-                                            </a>
-                                        <?php endif; ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            <?php else: ?>
-                <div class="alert alert-info">
-                    <p>No payment history available yet.</p>
-                </div>
-            <?php endif; ?>
-        </div>
+    <div class="header-actions">
+        <a href="<?php echo e(url('subscription/index')); ?>" class="btn btn-secondary">&larr; Back to Subscription</a>
     </div>
+</div>
 
-    <!-- Payment Summary -->
-    <?php if (!empty($invoices)): ?>
-        <div class="card">
-            <div class="card-header">
-                <h2>Payment Summary</h2>
-            </div>
-            <div class="card-body">
-                <div class="summary-grid">
-                    <div class="summary-item">
-                        <div class="summary-label">Total Paid</div>
-                        <div class="summary-value">
-                            $<?php
-                            $total = 0;
-                            foreach ($invoices as $invoice) {
-                                if ($invoice['status'] === 'paid') {
-                                    $total += $invoice['amount_paid'];
-                                }
-                            }
-                            echo number_format($total / 100, 2);
-                            ?>
-                        </div>
-                    </div>
+<?php if ($loadError): ?>
+    <div class="alert alert-warning">Invoices could not be loaded from Stripe right now. Showing locally recorded invoices.</div>
+<?php elseif ($demoMode): ?>
+    <div class="alert alert-info">Demo mode: showing invoices recorded in the CRM. Stripe invoices appear here once Stripe is configured.</div>
+<?php endif; ?>
 
-                    <div class="summary-item">
-                        <div class="summary-label">Total Invoices</div>
-                        <div class="summary-value">
-                            <?php echo count($invoices); ?>
-                        </div>
-                    </div>
+<?php if (!empty($invoices)): ?>
+    <div class="stats-grid">
+        <div class="stat-card"><div class="stat-number"><?php echo e(View::formatCurrency($totalPaid)); ?></div><div class="stat-label">Total paid</div></div>
+        <div class="stat-card"><div class="stat-number"><?php echo count($invoices); ?></div><div class="stat-label">Invoices</div></div>
+        <div class="stat-card"><div class="stat-number"><?php echo (int)$paidCount; ?></div><div class="stat-label">Paid invoices</div></div>
+    </div>
+<?php endif; ?>
 
-                    <div class="summary-item">
-                        <div class="summary-label">Paid Invoices</div>
-                        <div class="summary-value">
-                            <?php
-                            $paidCount = 0;
-                            foreach ($invoices as $invoice) {
-                                if ($invoice['status'] === 'paid') {
-                                    $paidCount++;
-                                }
-                            }
-                            echo $paidCount;
-                            ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
+<div class="card mt-2">
+    <div class="card-header"><h2>Invoices</h2></div>
+    <?php if (empty($invoices)): ?>
+        <div class="card-body empty-state"><p class="text-muted">No payment history available yet.</p></div>
+    <?php else: ?>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Invoice #</th>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th class="text-right">Amount</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($invoices as $invoice): ?>
+                        <tr>
+                            <td><strong><?php echo e($invoice['number']); ?></strong></td>
+                            <td><?php echo e(View::formatDate($invoice['date'], 'M j, Y')); ?></td>
+                            <td><?php echo e($invoice['description']); ?></td>
+                            <td class="text-right"><?php echo e(View::formatCurrency($invoice['amount'])); ?></td>
+                            <td>
+                                <span class="badge <?php echo isset($invoiceBadges[$invoice['status']]) ? $invoiceBadges[$invoice['status']] : 'badge-secondary'; ?>">
+                                    <?php echo e(ucfirst((string)$invoice['status'])); ?>
+                                </span>
+                            </td>
+                            <td>
+                                <?php if ($invoice['pdf_url'] !== ''): ?>
+                                    <a href="<?php echo e($invoice['pdf_url']); ?>" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">PDF</a>
+                                <?php endif; ?>
+                                <?php if ($invoice['hosted_url'] !== ''): ?>
+                                    <a href="<?php echo e($invoice['hosted_url']); ?>" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">View</a>
+                                <?php endif; ?>
+                                <?php if ($invoice['pdf_url'] === '' && $invoice['hosted_url'] === ''): ?>
+                                    <span class="text-muted">—</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
     <?php endif; ?>
 </div>
 
-<style>
-.table-responsive {
-    overflow-x: auto;
-}
-
-.table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 16px;
-}
-
-.table th,
-.table td {
-    padding: 12px;
-    text-align: left;
-    border-bottom: 1px solid #e0e0e0;
-}
-
-.table th {
-    background: #f8f9fa;
-    font-weight: 600;
-    color: #666;
-}
-
-.table tbody tr:hover {
-    background: #f8f9fa;
-}
-
-.summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 20px;
-    margin-top: 16px;
-}
-
-.summary-item {
-    padding: 24px;
-    background: #f8f9fa;
-    border-radius: 6px;
-    text-align: center;
-}
-
-.summary-label {
-    font-weight: 600;
-    color: #666;
-    margin-bottom: 8px;
-}
-
-.summary-value {
-    font-size: 32px;
-    font-weight: bold;
-    color: #007bff;
-}
-
-.btn-sm {
-    padding: 6px 12px;
-    font-size: 14px;
-}
-
-.content-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
-    flex-wrap: wrap;
-    gap: 16px;
-}
-
-.content-header > div {
-    flex: 1;
-}
-</style>
-
-<?php include APP_PATH . '/views/layouts/footer.php'; ?>
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

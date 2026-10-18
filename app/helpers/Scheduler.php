@@ -153,7 +153,13 @@ class Scheduler {
              WHERE expires_at < NOW() OR (used_at IS NOT NULL AND used_at < DATE_SUB(NOW(), INTERVAL 1 DAY))"
         );
         $attempts = $this->conn->exec("DELETE FROM login_attempts WHERE attempted_at < DATE_SUB(NOW(), INTERVAL 30 DAY)");
-        return array('password_resets' => (int)$resets, 'login_attempts' => (int)$attempts);
+
+        // Keep 90 days of webhook delivery history
+        require_once APP_PATH . '/models/WebhookLog.php';
+        $webhookLog = new WebhookLog();
+        $webhookLogs = $webhookLog->deleteOldLogs(90);
+
+        return array('password_resets' => (int)$resets, 'login_attempts' => (int)$attempts, 'webhook_logs' => (int)$webhookLogs);
     }
 
     /**

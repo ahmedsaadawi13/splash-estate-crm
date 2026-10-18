@@ -3,7 +3,8 @@
 
 /**
  * SplashEstate CRM - Webhooks Controller
- * Manages webhook configurations and logs
+ * Manages outgoing webhook endpoints and their delivery logs.
+ * Every action requires the webhooks.manage permission and is tenant scoped.
  */
 
 class WebhooksController extends Controller {
@@ -24,240 +25,133 @@ class WebhooksController extends Controller {
      * List webhooks
      */
     public function index() {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
 
-        $tenantId = $this->getTenantId();
-        $webhooks = $this->webhookModel->getAll($tenantId);
-
-        // Get stats for each webhook
-        foreach ($webhooks as &$webhook) {
-            $webhook['stats'] = $this->webhookModel->getStats($webhook['id']);
-        }
-
-        $data = array(
+        $this->view('webhooks/index', array(
             'title' => 'Webhooks',
-            'webhooks' => $webhooks
-        );
-
-        $this->view('webhooks/index', $data);
+            'webhooks' => $this->webhookModel->getAllWithStats($tenantId),
+            'availableEvents' => $this->webhookModel->getAvailableEvents()
+        ));
     }
 
     /**
-     * Create webhook
+     * Create webhook (GET form / POST save)
      */
     public function create() {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
+
+        $formData = array('name' => '', 'url' => '', 'events' => '', 'status' => 'active', 'retry_enabled' => 1, 'max_retries' => 3);
+        $errors = array();
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $this->processCreate();
-            return;
+            $this->requirePostWithCsrf('webhooks/create');
+
+            list($formData, $errors) = $this->readForm();
+            $secret = $this->webhookModel->generateSecret();
+
+            if (empty($errors)) {
+                $formData['tenant_id'] = $tenantId;
+                $formData['created_by'] = $this->getUserId();
+                $formData['secret'] = $secret;
+
+                $webhookId = $this->webhookModel->create($formData);
+                if ($webhookId) {
+                    logActivity($this->getUserId(), $tenantId, 'created', 'webhook', $webhookId);
+                    $this->revealSecretOnce($webhookId, $secret);
+                    $this->setFlash('success', 'Webhook created. Copy the signing secret now - it will not be shown again.');
+                    $this->redirect('webhooks/view/' . $webhookId);
+                }
+                $errors['general'] = 'Failed to create webhook. Please try again.';
+            }
         }
 
-        $data = array(
+        $this->view('webhooks/create', array(
             'title' => 'Create Webhook',
             'availableEvents' => $this->webhookModel->getAvailableEvents(),
-            'errors' => array(),
-            'formData' => array()
-        );
-
-        $this->view('webhooks/create', $data);
+            'errors' => $errors,
+            'formData' => $formData
+        ));
     }
 
     /**
-     * Process create form
+     * Webhook details with recent deliveries (URL: /webhooks/view/{id})
+     * @param int $id Webhook ID
      */
-    private function processCreate() {
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
-            $this->redirect('webhooks/index');
-            return;
-        }
+    public function show($id) {
+        $tenantId = $this->requireWebhookAccess();
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
 
-        $tenantId = $this->getTenantId();
-
-        $formData = array(
-            'name' => $this->sanitize($_POST['name']),
-            'url' => $this->sanitize($_POST['url']),
-            'events' => isset($_POST['events']) ? implode(',', $_POST['events']) : '',
-            'secret' => !empty($_POST['secret']) ? $this->sanitize($_POST['secret']) : $this->webhookModel->generateSecret(),
-            'status' => isset($_POST['status']) ? $this->sanitize($_POST['status']) : 'active',
-            'retry_enabled' => isset($_POST['retry_enabled']) ? 1 : 0,
-            'max_retries' => (int)$_POST['max_retries']
-        );
-
-        $errors = validateRequired($formData, array('name', 'url', 'events'));
-
-        // Validate URL
-        if (!filter_var($formData['url'], FILTER_VALIDATE_URL)) {
-            $errors['url'] = 'Please enter a valid URL';
-        }
-
-        if (!empty($errors)) {
-            $data = array(
-                'title' => 'Create Webhook',
-                'availableEvents' => $this->webhookModel->getAvailableEvents(),
-                'errors' => $errors,
-                'formData' => $formData
-            );
-            $this->view('webhooks/create', $data);
-            return;
-        }
-
-        $formData['tenant_id'] = $tenantId;
-        $formData['created_by'] = $this->getUserId();
-
-        $webhookId = $this->webhookModel->create($formData);
-
-        if ($webhookId) {
-            logActivity($this->getUserId(), $tenantId, 'created', 'webhook', $webhookId);
-            $this->setFlash('success', 'Webhook created successfully');
-            $this->redirect('webhooks/view/' . $webhookId);
-        } else {
-            $this->setFlash('error', 'Failed to create webhook');
-            $this->redirect('webhooks/create');
-        }
-    }
-
-    /**
-     * View webhook
-     */
-    public function view($id) {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
-
-        $tenantId = $this->getTenantId();
-        $webhook = $this->webhookModel->getById($id, $tenantId);
-
-        if (!$webhook) {
-            $this->setFlash('error', 'Webhook not found');
-            $this->redirect('webhooks/index');
-            return;
-        }
-
-        // Get logs
-        $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+        $page = max(1, isset($_GET['page']) ? (int)$_GET['page'] : 1);
         $perPage = 20;
-        $offset = ($page - 1) * $perPage;
+        $total = $this->logModel->countByWebhook($webhook['id']);
 
-        $logs = $this->logModel->getByWebhook($id, $perPage, $offset);
-        $statusCounts = $this->logModel->countByStatus($id);
+        // A freshly created/regenerated secret is shown exactly once
+        $revealedSecret = null;
+        if (isset($_SESSION['webhook_secret_once'][$webhook['id']])) {
+            $revealedSecret = $_SESSION['webhook_secret_once'][$webhook['id']];
+            unset($_SESSION['webhook_secret_once'][$webhook['id']]);
+        }
 
-        $data = array(
-            'title' => 'Webhook Details',
+        $this->view('webhooks/view', array(
+            'title' => 'Webhook: ' . $webhook['name'],
             'webhook' => $webhook,
-            'logs' => $logs,
-            'statusCounts' => $statusCounts,
-            'currentPage' => $page
-        );
-
-        $this->view('webhooks/view', $data);
+            'events' => Webhook::parseEvents($webhook['events']),
+            'availableEvents' => $this->webhookModel->getAvailableEvents(),
+            'maskedSecret' => Webhook::maskSecret($webhook['secret']),
+            'revealedSecret' => $revealedSecret,
+            'logs' => $this->logModel->getByWebhook($webhook['id'], $perPage, ($page - 1) * $perPage),
+            'statusCounts' => $this->logModel->countByStatus($webhook['id']),
+            'currentPage' => $page,
+            'totalPages' => (int)ceil($total / $perPage)
+        ));
     }
 
     /**
-     * Edit webhook
+     * Edit webhook (GET form / POST save)
+     * @param int $id Webhook ID
      */
     public function edit($id) {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
 
-        $tenantId = $this->getTenantId();
-        $webhook = $this->webhookModel->getById($id, $tenantId);
-
-        if (!$webhook) {
-            $this->setFlash('error', 'Webhook not found');
-            $this->redirect('webhooks/index');
-            return;
-        }
+        $formData = $webhook;
+        $errors = array();
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $this->processEdit($id);
-            return;
+            $this->requirePostWithCsrf('webhooks/edit/' . (int)$webhook['id']);
+
+            list($formData, $errors) = $this->readForm();
+            if (empty($errors)) {
+                if ($this->webhookModel->update($webhook['id'], $tenantId, $formData)) {
+                    logActivity($this->getUserId(), $tenantId, 'updated', 'webhook', $webhook['id']);
+                    $this->setFlash('success', 'Webhook updated successfully');
+                    $this->redirect('webhooks/view/' . (int)$webhook['id']);
+                }
+                $errors['general'] = 'Failed to update webhook. Please try again.';
+            }
         }
 
-        $data = array(
+        $this->view('webhooks/edit', array(
             'title' => 'Edit Webhook',
             'webhook' => $webhook,
+            'formData' => $formData,
             'availableEvents' => $this->webhookModel->getAvailableEvents(),
-            'errors' => array()
-        );
-
-        $this->view('webhooks/edit', $data);
+            'errors' => $errors
+        ));
     }
 
     /**
-     * Process edit form
-     */
-    private function processEdit($id) {
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
-            $this->redirect('webhooks/index');
-            return;
-        }
-
-        $tenantId = $this->getTenantId();
-
-        $formData = array(
-            'name' => $this->sanitize($_POST['name']),
-            'url' => $this->sanitize($_POST['url']),
-            'events' => isset($_POST['events']) ? implode(',', $_POST['events']) : '',
-            'status' => $this->sanitize($_POST['status']),
-            'retry_enabled' => isset($_POST['retry_enabled']) ? 1 : 0,
-            'max_retries' => (int)$_POST['max_retries']
-        );
-
-        // Only update secret if provided
-        if (!empty($_POST['secret'])) {
-            $formData['secret'] = $this->sanitize($_POST['secret']);
-        }
-
-        $errors = validateRequired($formData, array('name', 'url', 'events'));
-
-        if (!filter_var($formData['url'], FILTER_VALIDATE_URL)) {
-            $errors['url'] = 'Please enter a valid URL';
-        }
-
-        if (!empty($errors)) {
-            $webhook = $this->webhookModel->getById($id, $tenantId);
-            $data = array(
-                'title' => 'Edit Webhook',
-                'webhook' => $webhook,
-                'availableEvents' => $this->webhookModel->getAvailableEvents(),
-                'errors' => $errors
-            );
-            $this->view('webhooks/edit', $data);
-            return;
-        }
-
-        if ($this->webhookModel->update($id, $tenantId, $formData)) {
-            logActivity($this->getUserId(), $tenantId, 'updated', 'webhook', $id);
-            $this->setFlash('success', 'Webhook updated successfully');
-            $this->redirect('webhooks/view/' . $id);
-        } else {
-            $this->setFlash('error', 'Failed to update webhook');
-            $this->redirect('webhooks/edit/' . $id);
-        }
-    }
-
-    /**
-     * Delete webhook
+     * Delete webhook (POST + CSRF)
+     * @param int $id Webhook ID
      */
     public function delete($id) {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
+        $this->requirePostWithCsrf('webhooks/index');
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
 
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
-            $this->redirect('webhooks/index');
-            return;
-        }
-
-        $tenantId = $this->getTenantId();
-
-        if ($this->webhookModel->delete($id, $tenantId)) {
-            logActivity($this->getUserId(), $tenantId, 'deleted', 'webhook', $id);
-            $this->setFlash('success', 'Webhook deleted successfully');
+        if ($this->webhookModel->delete($webhook['id'], $tenantId)) {
+            logActivity($this->getUserId(), $tenantId, 'deleted', 'webhook', $webhook['id']);
+            $this->setFlash('success', 'Webhook deleted');
         } else {
             $this->setFlash('error', 'Failed to delete webhook');
         }
@@ -266,78 +160,183 @@ class WebhooksController extends Controller {
     }
 
     /**
-     * Test webhook endpoint
+     * Enable/disable webhook (POST + CSRF)
+     * @param int $id Webhook ID
+     */
+    public function toggle($id) {
+        $tenantId = $this->requireWebhookAccess();
+        $this->requirePostWithCsrf('webhooks/index');
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
+
+        $newStatus = $webhook['status'] === 'active' ? 'inactive' : 'active';
+        if ($this->webhookModel->update($webhook['id'], $tenantId, array('status' => $newStatus))) {
+            logActivity($this->getUserId(), $tenantId, $newStatus === 'active' ? 'enabled' : 'disabled', 'webhook', $webhook['id']);
+            $this->setFlash('success', 'Webhook ' . ($newStatus === 'active' ? 'enabled' : 'disabled'));
+        } else {
+            $this->setFlash('error', 'Failed to update webhook');
+        }
+
+        $this->redirect($this->safeReturnPath('webhooks/view/' . (int)$webhook['id']));
+    }
+
+    /**
+     * Send a test event to the endpoint (POST + CSRF)
+     * @param int $id Webhook ID
      */
     public function test($id) {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
+        $this->requirePostWithCsrf('webhooks/view/' . (int)$id);
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
 
-        $tenantId = $this->getTenantId();
-        $webhook = $this->webhookModel->getById($id, $tenantId);
+        $result = $this->webhookService->sendTest($webhook);
+        logActivity($this->getUserId(), $tenantId, 'tested', 'webhook', $webhook['id']);
 
-        if (!$webhook) {
-            $this->jsonResponse(array('error' => 'Webhook not found'), 404);
-            return;
+        if ($this->wantsJson()) {
+            $this->jsonResponse($result, 200);
         }
 
-        $result = $this->webhookService->testEndpoint($webhook['url'], $webhook['secret']);
-
-        $this->jsonResponse($result);
+        if ($result['success']) {
+            $this->setFlash('success', 'Test event delivered (HTTP ' . $result['status_code'] . ', ' . $result['duration_ms'] . ' ms).');
+        } else {
+            $this->setFlash('error', 'Test event failed: ' . ($result['error'] !== '' ? $result['error'] : 'HTTP ' . $result['status_code']));
+        }
+        $this->redirect('webhooks/view/' . (int)$webhook['id']);
     }
 
     /**
-     * View webhook logs
+     * Delivery log for all webhooks of the tenant
      */
     public function logs() {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
+        $tenantId = $this->requireWebhookAccess();
 
-        $tenantId = $this->getTenantId();
-        $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-        $perPage = 50;
-        $offset = ($page - 1) * $perPage;
-
-        $logs = $this->logModel->getByTenant($tenantId, $perPage, $offset);
-
-        $data = array(
-            'title' => 'Webhook Logs',
-            'logs' => $logs,
-            'currentPage' => $page
+        $filters = array(
+            'status' => isset($_GET['status']) ? (string)$_GET['status'] : '',
+            'webhook_id' => isset($_GET['webhook_id']) ? (int)$_GET['webhook_id'] : 0
         );
+        $page = max(1, isset($_GET['page']) ? (int)$_GET['page'] : 1);
+        $perPage = 50;
+        $total = $this->logModel->countByTenant($tenantId, $filters);
 
-        $this->view('webhooks/logs', $data);
+        $this->view('webhooks/logs', array(
+            'title' => 'Webhook Delivery Log',
+            'logs' => $this->logModel->getByTenant($tenantId, $perPage, ($page - 1) * $perPage, $filters),
+            'webhooks' => $this->webhookModel->getAllWithStats($tenantId),
+            'filters' => $filters,
+            'currentPage' => $page,
+            'totalPages' => (int)ceil($total / $perPage),
+            'total' => $total
+        ));
     }
 
     /**
-     * Regenerate secret
+     * Generate a new signing secret (POST + CSRF); shown once on the details page
+     * @param int $id Webhook ID
      */
     public function regenerateSecret($id) {
-        $this->requireLogin();
-        $this->requireRole('tenant_admin');
-
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->jsonResponse(array('error' => 'Invalid request'), 400);
-            return;
-        }
-
-        $tenantId = $this->getTenantId();
-        $webhook = $this->webhookModel->getById($id, $tenantId);
-
-        if (!$webhook) {
-            $this->jsonResponse(array('error' => 'Webhook not found'), 404);
-            return;
-        }
+        $tenantId = $this->requireWebhookAccess();
+        $this->requirePostWithCsrf('webhooks/view/' . (int)$id);
+        $webhook = $this->findWebhookOrRedirect($id, $tenantId);
 
         $newSecret = $this->webhookModel->generateSecret();
-
-        if ($this->webhookModel->update($id, $tenantId, array('secret' => $newSecret))) {
-            logActivity($this->getUserId(), $tenantId, 'regenerated_secret', 'webhook', $id);
-            $this->jsonResponse(array(
-                'success' => true,
-                'secret' => $newSecret
-            ));
+        if ($this->webhookModel->update($webhook['id'], $tenantId, array('secret' => $newSecret))) {
+            logActivity($this->getUserId(), $tenantId, 'regenerated_secret', 'webhook', $webhook['id']);
+            if ($this->wantsJson()) {
+                $this->jsonResponse(array('success' => true, 'secret' => $newSecret));
+            }
+            $this->revealSecretOnce($webhook['id'], $newSecret);
+            $this->setFlash('success', 'New signing secret generated. Update your receiver - the old secret no longer works.');
         } else {
-            $this->jsonResponse(array('error' => 'Failed to regenerate secret'), 500);
+            $this->setFlash('error', 'Failed to regenerate secret');
         }
+        $this->redirect('webhooks/view/' . (int)$webhook['id']);
+    }
+
+    /**
+     * Permission + tenant gate shared by every action
+     * @return int Tenant ID
+     */
+    private function requireWebhookAccess() {
+        $this->requirePermission('webhooks.manage');
+        $tenantId = $this->getTenantId();
+        if (empty($tenantId)) {
+            $this->setFlash('error', 'Webhooks are configured per agency. Sign in with an agency account.');
+            $this->redirect('dashboard/index');
+        }
+        return (int)$tenantId;
+    }
+
+    /**
+     * Load a webhook of the current tenant or redirect with an error
+     */
+    private function findWebhookOrRedirect($id, $tenantId) {
+        $webhook = ctype_digit((string)$id) ? $this->webhookModel->getById((int)$id, $tenantId) : false;
+        if (!$webhook) {
+            if ($this->wantsJson()) {
+                $this->jsonResponse(array('success' => false, 'message' => 'Webhook not found'), 404);
+            }
+            $this->setFlash('error', 'Webhook not found');
+            $this->redirect('webhooks/index');
+        }
+        return $webhook;
+    }
+
+    /**
+     * Read and validate the create/edit form
+     * @return array array($formData, $errors)
+     */
+    private function readForm() {
+        $name = isset($_POST['name']) ? trim((string)$_POST['name']) : '';
+        $url = isset($_POST['url']) ? trim((string)$_POST['url']) : '';
+        $events = $this->webhookModel->normalizeEvents(isset($_POST['events']) ? $_POST['events'] : array());
+        $status = isset($_POST['status']) && $_POST['status'] === 'inactive' ? 'inactive' : 'active';
+        $maxRetries = isset($_POST['max_retries']) ? (int)$_POST['max_retries'] : 3;
+
+        $formData = array(
+            'name' => $name,
+            'url' => $url,
+            'events' => $events,
+            'status' => $status,
+            'retry_enabled' => !empty($_POST['retry_enabled']) ? 1 : 0,
+            'max_retries' => max(1, min(10, $maxRetries))
+        );
+
+        $errors = array();
+        if ($name === '') {
+            $errors['name'] = 'Name is required';
+        } elseif (strlen($name) > 255) {
+            $errors['name'] = 'Name must be at most 255 characters';
+        }
+        $urlError = null;
+        if ($url === '') {
+            $errors['url'] = 'Endpoint URL is required';
+        } elseif ($this->webhookService->validateUrl($url, $urlError) === false) {
+            $errors['url'] = $urlError;
+        }
+        if ($events === '') {
+            $errors['events'] = 'Select at least one event';
+        }
+
+        return array($formData, $errors);
+    }
+
+    /**
+     * Keep a secret in the session so the next details page shows it once
+     */
+    private function revealSecretOnce($webhookId, $secret) {
+        if (!isset($_SESSION['webhook_secret_once']) || !is_array($_SESSION['webhook_secret_once'])) {
+            $_SESSION['webhook_secret_once'] = array();
+        }
+        $_SESSION['webhook_secret_once'][(int)$webhookId] = $secret;
+    }
+
+    /**
+     * Only allow redirects back to webhook pages
+     */
+    private function safeReturnPath($default) {
+        $return = isset($_POST['return_to']) ? (string)$_POST['return_to'] : '';
+        if (preg_match('#^webhooks/(index|logs|view/\d+)$#', $return)) {
+            return $return;
+        }
+        return $default;
     }
 }

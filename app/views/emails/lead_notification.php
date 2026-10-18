@@ -1,29 +1,22 @@
 <?php
 // FILE: /app/views/emails/lead_notification.php
+// Data: agent_name, lead_name, lead_email, lead_phone, interest_type, source, notes, lead_id
+require __DIR__ . '/_helpers.php';
+$preheader = 'A new lead has been assigned to you';
+$notes = isset($data['notes']) ? trim((string)$data['notes']) : '';
 $content = '
 <h2>New Lead Assigned to You</h2>
-
-<p>Hi ' . htmlspecialchars($agent_name) . ',</p>
-
+<p>Hi ' . $h('agent_name', 'there') . ',</p>
 <p>A new lead has been assigned to you. Please follow up promptly.</p>
-
 <div class="highlight">
-    <strong>Lead Name:</strong> ' . htmlspecialchars($lead_name) . '<br>
-    <strong>Email:</strong> ' . htmlspecialchars($lead_email) . '<br>
-    <strong>Phone:</strong> ' . htmlspecialchars($lead_phone) . '<br>
-    <strong>Interest:</strong> ' . htmlspecialchars($interest_type) . '<br>
-    <strong>Source:</strong> ' . htmlspecialchars($source) . '
+    <strong>Lead Name:</strong> ' . $h('lead_name') . '<br>
+    <strong>Email:</strong> ' . $h('lead_email') . '<br>
+    <strong>Phone:</strong> ' . $h('lead_phone') . '<br>
+    <strong>Interest:</strong> ' . $h('interest_type') . '<br>
+    <strong>Source:</strong> ' . $h('source') . '
 </div>
-
-' . (!empty($notes) ? '<p><strong>Notes:</strong> ' . nl2br(htmlspecialchars($notes)) . '</p>' : '') . '
-
-<p style="text-align: center;">
-    <a href="' . BASE_URL . '/leads/view/' . $lead_id . '" class="btn">View Lead Details</a>
-</p>
-
-<p>Best regards,<br>
-SplashEstate CRM</p>
+' . ($notes !== '' ? '<p><strong>Notes:</strong> ' . nl2br(htmlspecialchars($notes, ENT_QUOTES, 'UTF-8')) . '</p>' : '') . '
+<p style="text-align: center;"><a href="' . $link('leads/view/' . (int)(isset($data['lead_id']) ? $data['lead_id'] : 0)) . '" class="btn">View Lead Details</a></p>
+<p>Best regards,<br>SplashEstate CRM</p>
 ';
-
-include ROOT_PATH . '/app/views/emails/layout.php';
-?>
+include __DIR__ . '/layout.php';

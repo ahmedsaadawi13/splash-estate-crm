@@ -1,555 +1,261 @@
 <?php
 // FILE: /app/views/subscription/index.php
-include APP_PATH . '/views/layouts/header.php';
+require APP_PATH . '/views/layouts/header.php';
+
+$limitLabel = function ($value) {
+    return (int)$value === -1 ? 'Unlimited' : number_format((int)$value);
+};
+$usagePercent = function ($used, $limit) {
+    $limit = (int)$limit;
+    if ($limit === -1) {
+        return 0;
+    }
+    if ($limit <= 0) {
+        return 100;
+    }
+    return (int)min(100, round(($used / $limit) * 100));
+};
+$currentPlanId = $currentPlan ? (int)$currentPlan['id'] : 0;
+$currentPrice = $currentPlan ? (float)$currentPlan['price'] : null;
 ?>
 
-<div class="content-wrapper">
-    <div class="content-header">
-        <h1>Subscription Management</h1>
-        <p>Manage your subscription plan and billing</p>
+<div class="page-header">
+    <div>
+        <h1>Subscription &amp; Billing</h1>
+        <p class="text-muted">Manage your plan, usage and payments</p>
     </div>
+    <div class="header-actions">
+        <a href="<?php echo e(url('subscription/invoices')); ?>" class="btn btn-secondary">Payment History</a>
+    </div>
+</div>
 
-    <!-- Current Plan Overview -->
-    <div class="card">
-        <div class="card-header">
-            <h2>Current Plan</h2>
-        </div>
-        <div class="card-body">
-            <?php if (isset($currentPlan)): ?>
-                <div class="current-plan-info">
-                    <div class="plan-details">
-                        <h3><?php echo htmlspecialchars($currentPlan['name']); ?></h3>
-                        <p class="plan-price">
-                            $<?php echo number_format($currentPlan['price'], 2); ?> /
-                            <?php echo htmlspecialchars($currentPlan['billing_cycle']); ?>
-                        </p>
-                        <p class="plan-description">
-                            <?php echo htmlspecialchars($currentPlan['description']); ?>
-                        </p>
-                    </div>
+<?php if ($demoMode): ?>
+    <div class="alert alert-warning">
+        <strong>Demo mode:</strong> Stripe is not configured (<code>STRIPE_SECRET_KEY</code> is empty).
+        Plan changes are recorded locally and no payment is taken.
+    </div>
+<?php endif; ?>
 
-                    <?php if (isset($subscription) && $subscription): ?>
-                        <div class="subscription-status">
-                            <p><strong>Status:</strong>
-                                <span class="badge badge-<?php echo $subscription['status'] == 'active' ? 'success' : 'warning'; ?>">
-                                    <?php echo ucfirst($subscription['status']); ?>
-                                </span>
-                            </p>
-                            <?php if (isset($subscription['current_period_end'])): ?>
-                                <p><strong>Next Billing Date:</strong>
-                                    <?php echo date('F j, Y', strtotime($subscription['current_period_end'])); ?>
-                                </p>
-                            <?php endif; ?>
-                        </div>
-                    <?php endif; ?>
+<?php if ($checkoutStatus === 'success'): ?>
+    <div class="alert alert-success">Thank you! Your payment was received. Your plan is updated as soon as Stripe confirms the subscription (usually within seconds).</div>
+<?php elseif ($checkoutStatus === 'cancelled'): ?>
+    <div class="alert alert-info">Checkout was cancelled. Your plan has not changed.</div>
+<?php endif; ?>
 
-                    <div class="usage-stats">
-                        <h4>Current Usage</h4>
-                        <div class="usage-grid">
-                            <div class="usage-item">
-                                <div class="usage-label">Leads</div>
-                                <div class="usage-value">
-                                    <?php echo number_format($usage['leads']); ?> /
-                                    <?php echo $currentPlan['max_leads'] == -1 ? 'Unlimited' : number_format($currentPlan['max_leads']); ?>
-                                </div>
-                                <div class="usage-bar">
-                                    <div class="usage-progress" style="width: <?php
-                                        echo $currentPlan['max_leads'] == -1 ? 0 : min(100, ($usage['leads'] / $currentPlan['max_leads']) * 100);
-                                    ?>%"></div>
-                                </div>
-                            </div>
-
-                            <div class="usage-item">
-                                <div class="usage-label">Properties</div>
-                                <div class="usage-value">
-                                    <?php echo number_format($usage['properties']); ?> /
-                                    <?php echo $currentPlan['max_properties'] == -1 ? 'Unlimited' : number_format($currentPlan['max_properties']); ?>
-                                </div>
-                                <div class="usage-bar">
-                                    <div class="usage-progress" style="width: <?php
-                                        echo $currentPlan['max_properties'] == -1 ? 0 : min(100, ($usage['properties'] / $currentPlan['max_properties']) * 100);
-                                    ?>%"></div>
-                                </div>
-                            </div>
-
-                            <div class="usage-item">
-                                <div class="usage-label">Agents</div>
-                                <div class="usage-value">
-                                    <?php echo number_format($usage['agents']); ?> /
-                                    <?php echo $currentPlan['max_agents'] == -1 ? 'Unlimited' : number_format($currentPlan['max_agents']); ?>
-                                </div>
-                                <div class="usage-bar">
-                                    <div class="usage-progress" style="width: <?php
-                                        echo $currentPlan['max_agents'] == -1 ? 0 : min(100, ($usage['agents'] / $currentPlan['max_agents']) * 100);
-                                    ?>%"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+<div class="card">
+    <div class="card-header"><h2>Current Plan</h2></div>
+    <div class="card-body">
+        <?php if ($currentPlan && $subscription): ?>
+            <div class="grid-2">
+                <div>
+                    <h3 class="mb-1"><?php echo e($currentPlan['name']); ?> <?php echo View::statusBadge($subscription['status']); ?></h3>
+                    <p class="stat-number" style="font-size:1.5rem;">
+                        <?php echo e(View::formatCurrency($currentPlan['price'])); ?>
+                        <span class="small text-muted">/ <?php echo e($currentPlan['billing_cycle'] === 'yearly' ? 'year' : 'month'); ?></span>
+                    </p>
+                    <p class="text-muted"><?php echo e($currentPlan['description'] ?? ''); ?></p>
                 </div>
-            <?php else: ?>
-                <p class="alert alert-info">You don't have an active subscription plan.</p>
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <!-- Available Plans -->
-    <div class="card">
-        <div class="card-header">
-            <h2>Available Plans</h2>
-        </div>
-        <div class="card-body">
-            <div class="plans-grid">
-                <?php foreach ($plans as $plan): ?>
-                    <div class="plan-card <?php echo isset($currentPlan) && $currentPlan['id'] == $plan['id'] ? 'current-plan' : ''; ?>">
-                        <div class="plan-header">
-                            <h3><?php echo htmlspecialchars($plan['name']); ?></h3>
-                            <?php if (isset($currentPlan) && $currentPlan['id'] == $plan['id']): ?>
-                                <span class="badge badge-primary">Current Plan</span>
+                <div>
+                    <dl class="detail-list">
+                        <dt>Started</dt>
+                        <dd><?php echo e(View::formatDate($subscription['start_date'], 'F j, Y')); ?></dd>
+                        <dt><?php echo !empty($subscription['auto_renew']) ? 'Renews' : 'Ends'; ?></dt>
+                        <dd>
+                            <?php echo !empty($subscription['end_date']) ? e(View::formatDate($subscription['end_date'], 'F j, Y')) : (!empty($subscription['auto_renew']) ? 'Automatically each period' : '—'); ?>
+                            <?php if (empty($subscription['auto_renew'])): ?>
+                                <span class="badge badge-warning">Will not renew</span>
                             <?php endif; ?>
-                        </div>
+                        </dd>
+                    </dl>
+                </div>
+            </div>
 
-                        <div class="plan-price">
-                            <span class="price-amount">$<?php echo number_format($plan['price'], 0); ?></span>
-                            <span class="price-period">/ <?php echo htmlspecialchars($plan['billing_cycle']); ?></span>
+            <h4 class="mt-2">Current usage</h4>
+            <div class="grid-3">
+                <?php foreach (array('leads' => array('Leads', 'max_leads'), 'properties' => array('Properties', 'max_properties'), 'agents' => array('Users', 'max_agents')) as $key => $meta): ?>
+                    <?php $pct = $usagePercent($usage[$key], $currentPlan[$meta[1]]); ?>
+                    <div class="stat-card">
+                        <div class="stat-label"><?php echo e($meta[0]); ?></div>
+                        <div class="stat-number" style="font-size:1.25rem;">
+                            <?php echo number_format((int)$usage[$key]); ?> / <?php echo e($limitLabel($currentPlan[$meta[1]])); ?>
                         </div>
-
-                        <div class="plan-description">
-                            <p><?php echo htmlspecialchars($plan['description']); ?></p>
-                        </div>
-
-                        <div class="plan-features">
-                            <h4>What's included:</h4>
-                            <ul>
-                                <li><?php echo $plan['max_leads'] == -1 ? 'Unlimited' : number_format($plan['max_leads']); ?> Leads</li>
-                                <li><?php echo $plan['max_properties'] == -1 ? 'Unlimited' : number_format($plan['max_properties']); ?> Properties</li>
-                                <li><?php echo $plan['max_agents'] == -1 ? 'Unlimited' : number_format($plan['max_agents']); ?> Agents</li>
-                                <?php
-                                $features = array_map('trim', explode(',', $plan['features']));
-                                foreach ($features as $feature):
-                                ?>
-                                    <li><?php echo htmlspecialchars($feature); ?></li>
-                                <?php endforeach; ?>
-                            </ul>
-                        </div>
-
-                        <div class="plan-action">
-                            <?php if (isset($currentPlan) && $currentPlan['id'] == $plan['id']): ?>
-                                <button class="btn btn-secondary" disabled>Current Plan</button>
-                            <?php elseif (isset($currentPlan) && $plan['price'] > $currentPlan['price']): ?>
-                                <button class="btn btn-primary" onclick="confirmPlanChange(<?php echo $plan['id']; ?>, 'upgrade')">
-                                    Upgrade to <?php echo htmlspecialchars($plan['name']); ?>
-                                </button>
-                            <?php elseif (isset($currentPlan)): ?>
-                                <button class="btn btn-outline" onclick="confirmPlanChange(<?php echo $plan['id']; ?>, 'downgrade')">
-                                    Downgrade to <?php echo htmlspecialchars($plan['name']); ?>
-                                </button>
-                            <?php else: ?>
-                                <button class="btn btn-primary" onclick="confirmPlanChange(<?php echo $plan['id']; ?>, 'subscribe')">
-                                    Subscribe
-                                </button>
-                            <?php endif; ?>
-                        </div>
+                        <div class="progress"><div class="progress-bar" style="width: <?php echo $pct; ?>%;<?php echo $pct >= 90 ? 'background:#e74c3c;' : ''; ?>"></div></div>
                     </div>
                 <?php endforeach; ?>
             </div>
-        </div>
-    </div>
-
-    <!-- Billing Actions -->
-    <?php if (isset($subscription) && $subscription && $subscription['status'] == 'active'): ?>
-        <div class="card">
-            <div class="card-header">
-                <h2>Billing Management</h2>
+        <?php elseif (!empty($latestSubscription)): ?>
+            <div class="alert alert-warning">
+                Your <strong><?php echo e($latestSubscription['plan_name']); ?></strong> subscription
+                <?php echo $latestSubscription['status'] === 'active' ? 'expired' : 'is ' . e($latestSubscription['status']); ?>
+                <?php if (!empty($latestSubscription['end_date'])): ?>
+                    on <?php echo e(View::formatDate($latestSubscription['end_date'], 'F j, Y')); ?>
+                <?php endif; ?>.
+                Choose a plan below to continue adding leads, properties and users.
             </div>
-            <div class="card-body">
-                <div class="billing-actions">
-                    <a href="<?php echo BASE_URL; ?>/subscription/invoices" class="btn btn-outline">
-                        View Payment History
-                    </a>
-                    <button class="btn btn-outline" onclick="managePaymentMethods()">
-                        Payment Methods
-                    </button>
-                    <button class="btn btn-danger" onclick="confirmCancellation()">
-                        Cancel Subscription
-                    </button>
+        <?php else: ?>
+            <div class="alert alert-info">You don't have an active subscription plan. Choose one below.</div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="card mt-2">
+    <div class="card-header"><h2>Available Plans</h2></div>
+    <div class="card-body">
+        <div class="grid-3">
+            <?php foreach ($plans as $plan): ?>
+                <?php
+                $isCurrent = (int)$plan['id'] === $currentPlanId;
+                if ($currentPrice === null) {
+                    $action = 'subscribe';
+                    $label = 'Choose ' . $plan['name'];
+                } elseif ((float)$plan['price'] > $currentPrice) {
+                    $action = 'upgrade';
+                    $label = 'Upgrade to ' . $plan['name'];
+                } else {
+                    $action = 'downgrade';
+                    $label = 'Switch to ' . $plan['name'];
+                }
+                $features = array_filter(array_map('trim', explode(',', (string)$plan['features'])), 'strlen');
+                ?>
+                <div class="card" style="<?php echo $isCurrent ? 'border:2px solid #27ae60;' : ''; ?>">
+                    <div class="card-header d-flex justify-between align-center">
+                        <h3><?php echo e($plan['name']); ?></h3>
+                        <?php if ($isCurrent): ?><span class="badge badge-success">Current</span><?php endif; ?>
+                    </div>
+                    <div class="card-body">
+                        <p class="stat-number" style="font-size:1.75rem;">
+                            <?php echo e(View::formatCurrency($plan['price'])); ?>
+                            <span class="small text-muted">/ <?php echo e($plan['billing_cycle'] === 'yearly' ? 'year' : 'month'); ?></span>
+                        </p>
+                        <p class="text-muted"><?php echo e($plan['description'] ?? ''); ?></p>
+                        <ul>
+                            <li><?php echo e($limitLabel($plan['max_leads'])); ?> leads</li>
+                            <li><?php echo e($limitLabel($plan['max_properties'])); ?> properties</li>
+                            <li><?php echo e($limitLabel($plan['max_agents'])); ?> users</li>
+                            <?php foreach ($features as $feature): ?>
+                                <li><?php echo e($feature); ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                    <div class="card-footer">
+                        <?php if ($isCurrent): ?>
+                            <button type="button" class="btn btn-secondary btn-block" disabled>Current plan</button>
+                        <?php elseif ($canManage): ?>
+                            <button type="button" class="btn <?php echo $action === 'downgrade' ? 'btn-outline' : 'btn-primary'; ?> btn-block js-change-plan"
+                                    data-plan-id="<?php echo (int)$plan['id']; ?>"
+                                    data-plan-name="<?php echo e($plan['name']); ?>"
+                                    data-action="<?php echo e($action); ?>">
+                                <?php echo e($label); ?>
+                            </button>
+                        <?php else: ?>
+                            <span class="small text-muted">Ask an administrator to change the plan.</span>
+                        <?php endif; ?>
+                    </div>
                 </div>
-            </div>
-        </div>
-    <?php endif; ?>
-</div>
-
-<!-- Plan Change Confirmation Modal -->
-<div id="planChangeModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 id="modalTitle">Confirm Plan Change</h3>
-            <span class="close" onclick="closePlanModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <p id="modalMessage"></p>
-            <div id="paymentMethodSection" style="display: none;">
-                <h4>Payment Information</h4>
-                <div id="card-element"></div>
-                <div id="card-errors" class="alert alert-danger" style="display: none;"></div>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closePlanModal()">Cancel</button>
-            <button class="btn btn-primary" id="confirmButton" onclick="executePlanChange()">Confirm</button>
+            <?php endforeach; ?>
         </div>
     </div>
 </div>
 
-<!-- Cancellation Modal -->
-<div id="cancelModal" class="modal" style="display: none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Cancel Subscription</h3>
-            <span class="close" onclick="closeCancelModal()">&times;</span>
-        </div>
-        <div class="modal-body">
-            <p>Are you sure you want to cancel your subscription?</p>
-            <p>Your access will continue until the end of your current billing period.</p>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeCancelModal()">Keep Subscription</button>
-            <button class="btn btn-danger" onclick="executeCancel()">Yes, Cancel</button>
+<?php if ($canManage && $subscription && $subscription['status'] === 'active'): ?>
+    <div class="card mt-2">
+        <div class="card-header"><h2>Billing Management</h2></div>
+        <div class="card-body d-flex gap-2 flex-wrap">
+            <a href="<?php echo e(url('subscription/payment-methods')); ?>" class="btn btn-outline">Payment Methods</a>
+            <?php if (!empty($subscription['auto_renew'])): ?>
+                <button type="button" class="btn btn-danger" id="js-cancel-subscription">Cancel Subscription</button>
+            <?php endif; ?>
         </div>
     </div>
-</div>
+<?php endif; ?>
 
-<style>
-.plans-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 20px;
-    margin-top: 20px;
-}
-
-.plan-card {
-    border: 2px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 24px;
-    background: #fff;
-    transition: all 0.3s ease;
-}
-
-.plan-card:hover {
-    border-color: #007bff;
-    box-shadow: 0 4px 12px rgba(0,123,255,0.15);
-}
-
-.plan-card.current-plan {
-    border-color: #28a745;
-    background: #f8fff9;
-}
-
-.plan-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-}
-
-.plan-header h3 {
-    margin: 0;
-    font-size: 24px;
-}
-
-.plan-price {
-    margin: 16px 0;
-}
-
-.price-amount {
-    font-size: 36px;
-    font-weight: bold;
-    color: #007bff;
-}
-
-.price-period {
-    font-size: 16px;
-    color: #666;
-}
-
-.plan-features {
-    margin: 20px 0;
-}
-
-.plan-features h4 {
-    font-size: 14px;
-    color: #666;
-    margin-bottom: 12px;
-}
-
-.plan-features ul {
-    list-style: none;
-    padding: 0;
-}
-
-.plan-features li {
-    padding: 8px 0;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.plan-features li:before {
-    content: "✓ ";
-    color: #28a745;
-    font-weight: bold;
-    margin-right: 8px;
-}
-
-.plan-action {
-    margin-top: 20px;
-}
-
-.usage-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 20px;
-    margin-top: 16px;
-}
-
-.usage-item {
-    padding: 16px;
-    background: #f8f9fa;
-    border-radius: 6px;
-}
-
-.usage-label {
-    font-weight: 600;
-    color: #666;
-    margin-bottom: 8px;
-}
-
-.usage-value {
-    font-size: 18px;
-    font-weight: bold;
-    margin-bottom: 8px;
-}
-
-.usage-bar {
-    height: 8px;
-    background: #e0e0e0;
-    border-radius: 4px;
-    overflow: hidden;
-}
-
-.usage-progress {
-    height: 100%;
-    background: linear-gradient(90deg, #007bff, #0056b3);
-    transition: width 0.3s ease;
-}
-
-.billing-actions {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.current-plan-info {
-    display: grid;
-    gap: 24px;
-}
-
-.plan-details {
-    padding-bottom: 24px;
-    border-bottom: 1px solid #e0e0e0;
-}
-
-.plan-details h3 {
-    margin: 0 0 8px 0;
-    font-size: 28px;
-}
-
-.plan-price {
-    font-size: 24px;
-    font-weight: bold;
-    color: #007bff;
-    margin: 8px 0;
-}
-
-.subscription-status {
-    padding: 16px;
-    background: #f8f9fa;
-    border-radius: 6px;
-}
-
-.subscription-status p {
-    margin: 8px 0;
-}
-
-.modal {
-    position: fixed;
-    z-index: 1000;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0,0,0,0.5);
-}
-
-.modal-content {
-    background-color: #fff;
-    margin: 10% auto;
-    padding: 0;
-    border-radius: 8px;
-    width: 90%;
-    max-width: 500px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-}
-
-.modal-header {
-    padding: 20px 24px;
-    border-bottom: 1px solid #e0e0e0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.modal-header h3 {
-    margin: 0;
-}
-
-.modal-body {
-    padding: 24px;
-}
-
-.modal-footer {
-    padding: 16px 24px;
-    border-top: 1px solid #e0e0e0;
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-}
-
-.close {
-    font-size: 28px;
-    font-weight: bold;
-    color: #aaa;
-    cursor: pointer;
-}
-
-.close:hover {
-    color: #000;
-}
-</style>
+<div id="plan-message" class="alert" style="display:none;margin-top:1rem;"></div>
 
 <script>
-let selectedPlanId = null;
-let changeType = null;
+(function () {
+    var demoMode = <?php echo $demoMode ? 'true' : 'false'; ?>;
+    var messageBox = document.getElementById('plan-message');
 
-function confirmPlanChange(planId, type) {
-    selectedPlanId = planId;
-    changeType = type;
-
-    const modal = document.getElementById('planChangeModal');
-    const title = document.getElementById('modalTitle');
-    const message = document.getElementById('modalMessage');
-
-    if (type === 'upgrade') {
-        title.textContent = 'Upgrade Plan';
-        message.textContent = 'You will be charged a prorated amount for the upgrade. Your next billing date will remain the same.';
-    } else if (type === 'downgrade') {
-        title.textContent = 'Downgrade Plan';
-        message.textContent = 'Your plan will be downgraded at the end of your current billing period.';
-    } else {
-        title.textContent = 'Subscribe to Plan';
-        message.textContent = 'Please confirm your subscription.';
-        // Show payment method section for new subscriptions
-        document.getElementById('paymentMethodSection').style.display = 'block';
+    function showMessage(type, text) {
+        messageBox.className = 'alert alert-' + type;
+        messageBox.textContent = text;
+        messageBox.style.display = 'block';
+        messageBox.scrollIntoView({behavior: 'smooth', block: 'center'});
     }
 
-    modal.style.display = 'block';
-}
+    function post(path, body) {
+        return fetch(BASE_URL + '/' + path, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+            body: JSON.stringify(body || {})
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return {success: false, error: 'Unexpected server response (HTTP ' + response.status + ')'};
+            });
+        });
+    }
 
-function closePlanModal() {
-    document.getElementById('planChangeModal').style.display = 'none';
-    selectedPlanId = null;
-    changeType = null;
-}
-
-function executePlanChange() {
-    if (!selectedPlanId) return;
-
-    const confirmButton = document.getElementById('confirmButton');
-    confirmButton.disabled = true;
-    confirmButton.textContent = 'Processing...';
-
-    fetch('<?php echo BASE_URL; ?>/subscription/changePlan', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            plan_id: selectedPlanId
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('Plan changed successfully!');
-            window.location.reload();
-        } else {
-            alert('Error: ' + (data.error || 'Failed to change plan'));
-            confirmButton.disabled = false;
-            confirmButton.textContent = 'Confirm';
-        }
-    })
-    .catch(error => {
-        alert('Error: ' + error.message);
-        confirmButton.disabled = false;
-        confirmButton.textContent = 'Confirm';
+    Array.prototype.forEach.call(document.querySelectorAll('.js-change-plan'), function (button) {
+        button.addEventListener('click', function () {
+            var name = button.getAttribute('data-plan-name');
+            var action = button.getAttribute('data-action');
+            var question = action === 'upgrade'
+                ? 'Upgrade to ' + name + '? The price difference is charged pro rata.'
+                : (action === 'downgrade' ? 'Switch to ' + name + '?' : 'Subscribe to ' + name + '?');
+            if (demoMode) {
+                question += '\n\n(Demo mode: no payment will be taken.)';
+            }
+            if (!window.confirm(question)) {
+                return;
+            }
+            var original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Processing…';
+            post('subscription/change-plan', {plan_id: parseInt(button.getAttribute('data-plan-id'), 10)})
+                .then(function (data) {
+                    if (data.success && data.redirect) {
+                        window.location.href = data.redirect;
+                        return;
+                    }
+                    if (data.success) {
+                        showMessage('success', data.message || 'Plan changed.');
+                        setTimeout(function () { window.location.reload(); }, 1200);
+                        return;
+                    }
+                    showMessage('error', data.error || data.message || 'Failed to change plan');
+                    button.disabled = false;
+                    button.textContent = original;
+                })
+                .catch(function (error) {
+                    showMessage('error', 'Network error: ' + error.message);
+                    button.disabled = false;
+                    button.textContent = original;
+                });
+        });
     });
-}
 
-function confirmCancellation() {
-    document.getElementById('cancelModal').style.display = 'block';
-}
-
-function closeCancelModal() {
-    document.getElementById('cancelModal').style.display = 'none';
-}
-
-function executeCancel() {
-    if (!confirm('Are you absolutely sure?')) return;
-
-    fetch('<?php echo BASE_URL; ?>/subscription/cancel', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('Subscription cancelled. Access will continue until ' + data.end_date);
-            window.location.reload();
-        } else {
-            alert('Error: ' + (data.error || 'Failed to cancel subscription'));
-        }
-    })
-    .catch(error => {
-        alert('Error: ' + error.message);
-    });
-}
-
-function managePaymentMethods() {
-    window.location.href = '<?php echo BASE_URL; ?>/subscription/paymentMethods';
-}
-
-// Close modals when clicking outside
-window.onclick = function(event) {
-    const planModal = document.getElementById('planChangeModal');
-    const cancelModal = document.getElementById('cancelModal');
-
-    if (event.target === planModal) {
-        closePlanModal();
+    var cancelButton = document.getElementById('js-cancel-subscription');
+    if (cancelButton) {
+        cancelButton.addEventListener('click', function () {
+            if (!window.confirm('Cancel your subscription? It will not renew, and access continues until the end of the current billing period.')) {
+                return;
+            }
+            cancelButton.disabled = true;
+            post('subscription/cancel').then(function (data) {
+                if (data.success) {
+                    showMessage('success', data.message);
+                    setTimeout(function () { window.location.reload(); }, 1500);
+                } else {
+                    showMessage('error', data.error || data.message || 'Failed to cancel subscription');
+                    cancelButton.disabled = false;
+                }
+            }).catch(function (error) {
+                showMessage('error', 'Network error: ' + error.message);
+                cancelButton.disabled = false;
+            });
+        });
     }
-    if (event.target === cancelModal) {
-        closeCancelModal();
-    }
-}
+})();
 </script>
 
-<?php include APP_PATH . '/views/layouts/footer.php'; ?>
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

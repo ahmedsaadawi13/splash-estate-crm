@@ -718,6 +718,21 @@ CREATE TABLE `password_resets` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
+-- Table: stripe_events
+-- Processed Stripe webhook event IDs (idempotent event handling)
+-- --------------------------------------------------------
+
+CREATE TABLE `stripe_events` (
+  `event_id` varchar(100) NOT NULL,
+  `type` varchar(100) NOT NULL,
+  `tenant_id` int(11) DEFAULT NULL,
+  `processed_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`event_id`),
+  KEY `idx_tenant` (`tenant_id`),
+  KEY `idx_processed` (`processed_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
 -- Table: login_attempts
 -- Login attempt tracking for brute-force protection
 -- --------------------------------------------------------

@@ -62,7 +62,8 @@ if (!defined('MAX_UPLOAD_SIZE')) define('MAX_UPLOAD_SIZE', 5242880); // 5MB
 if (!defined('ALLOWED_FILE_TYPES')) define('ALLOWED_FILE_TYPES', 'jpg,jpeg,png,pdf,doc,docx,xls,xlsx');
 
 // Email Configuration
-if (!defined('MAIL_DRIVER')) define('MAIL_DRIVER', 'smtp');
+// 'log' writes emails to storage/logs/mail.log (safe default); set 'smtp' in .env for real delivery
+if (!defined('MAIL_DRIVER')) define('MAIL_DRIVER', 'log');
 if (!defined('MAIL_HOST')) define('MAIL_HOST', 'smtp.gmail.com');
 if (!defined('MAIL_PORT')) define('MAIL_PORT', '587');
 if (!defined('MAIL_USERNAME')) define('MAIL_USERNAME', '');
@@ -85,6 +86,9 @@ if (!defined('APP_PATH')) define('APP_PATH', ROOT_PATH . '/app');
 if (!defined('PUBLIC_PATH')) define('PUBLIC_PATH', ROOT_PATH . '/public');
 if (!defined('STORAGE_PATH')) define('STORAGE_PATH', ROOT_PATH . '/storage');
 if (!defined('UPLOAD_PATH')) define('UPLOAD_PATH', STORAGE_PATH . '/uploads');
+
+// Health checks: token for /health/detailed (sent as X-Health-Token); empty = platform admins only
+if (!defined('HEALTH_TOKEN')) define('HEALTH_TOKEN', '');
 
 // Cron / scheduled jobs: shared secret for the HTTP cron endpoint (empty = CLI only)
 if (!defined('CRON_SECRET')) define('CRON_SECRET', '');

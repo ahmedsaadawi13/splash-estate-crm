@@ -3,206 +3,257 @@
 
 /**
  * SplashEstate CRM - Migration Base Class
- * Base class for database migrations
+ *
+ * Migrations live in database/migrations/YYYY_MM_DD_HHMMSS_snake_case_name.php
+ * and define a class named after the snake_case part (CamelCase) with up()
+ * and down() methods returning true on success.
+ *
+ * Helpers are idempotent (creating an existing table/column/index is a no-op)
+ * so migrations can safely run against databases created from database.sql.
+ * execute() throws on SQL errors so a failed statement can never be recorded
+ * as a successful migration.
  */
 
 abstract class Migration {
 
-    protected $db;
+    /** @var PDO */
     protected $conn;
 
-    public function __construct() {
-        $this->db = Database::getInstance();
-        $this->conn = $this->db->getConnection();
+    /**
+     * @param PDO|null $conn Connection to migrate (defaults to the application database)
+     */
+    public function __construct($conn = null) {
+        $this->conn = $conn instanceof PDO ? $conn : Database::getInstance()->getConnection();
     }
 
     /**
-     * Run the migration (apply changes)
+     * Apply the migration
      * @return bool Success
      */
     abstract public function up();
 
     /**
-     * Reverse the migration (rollback changes)
+     * Reverse the migration
      * @return bool Success
      */
     abstract public function down();
 
     /**
      * Execute raw SQL
-     * @param string $sql SQL query
-     * @return bool Success
+     * @param string $sql SQL statement
+     * @param array $params Bound parameters
+     * @return bool true
+     * @throws RuntimeException on SQL errors
      */
-    protected function execute($sql) {
+    protected function execute($sql, $params = array()) {
         try {
-            $this->conn->exec($sql);
+            if (empty($params)) {
+                $this->conn->exec($sql);
+            } else {
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute($params);
+            }
             return true;
         } catch (PDOException $e) {
-            error_log('Migration SQL error: ' . $e->getMessage());
-            return false;
+            throw new RuntimeException('SQL error: ' . $e->getMessage() . ' [' . self::shorten($sql) . ']');
         }
     }
 
     /**
-     * Check if table exists
+     * Run a query and return all rows
+     * @param string $sql SQL
+     * @param array $params Bound parameters
+     * @return array
+     */
+    protected function fetchAll($sql, $params = array()) {
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Run a query and return the first column of the first row
+     */
+    protected function fetchValue($sql, $params = array()) {
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchColumn();
+    }
+
+    /**
      * @param string $tableName Table name
-     * @return bool Exists
+     * @return bool
      */
     protected function tableExists($tableName) {
-        $sql = "SHOW TABLES LIKE :table_name";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute([':table_name' => $tableName]);
-        return $stmt->rowCount() > 0;
+        return (int)$this->fetchValue(
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t",
+            array(':t' => $tableName)
+        ) > 0;
     }
 
     /**
-     * Check if column exists
      * @param string $tableName Table name
      * @param string $columnName Column name
-     * @return bool Exists
+     * @return bool
      */
     protected function columnExists($tableName, $columnName) {
-        $sql = "SHOW COLUMNS FROM `{$tableName}` LIKE :column_name";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute([':column_name' => $columnName]);
-        return $stmt->rowCount() > 0;
+        return (int)$this->fetchValue(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c",
+            array(':t' => $tableName, ':c' => $columnName)
+        ) > 0;
     }
 
     /**
-     * Create table
+     * Full column type, e.g. "enum('a','b')" (null when the column does not exist)
+     */
+    protected function columnType($tableName, $columnName) {
+        $type = $this->fetchValue(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c",
+            array(':t' => $tableName, ':c' => $columnName)
+        );
+        return $type === false ? null : $type;
+    }
+
+    /**
      * @param string $tableName Table name
-     * @param string $definition Table definition SQL
-     * @return bool Success
+     * @param string $indexName Index name
+     * @return bool
+     */
+    protected function indexExists($tableName, $indexName) {
+        return (int)$this->fetchValue(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND INDEX_NAME = :i",
+            array(':t' => $tableName, ':i' => $indexName)
+        ) > 0;
+    }
+
+    /**
+     * Create a table unless it exists
+     * @param string $tableName Table name
+     * @param string $definition Column/key definitions (inside the parentheses)
+     * @return bool
      */
     protected function createTable($tableName, $definition) {
+        self::assertIdentifier($tableName);
         if ($this->tableExists($tableName)) {
-            error_log("Table {$tableName} already exists");
-            return false;
+            return true;
         }
-
-        $sql = "CREATE TABLE `{$tableName}` ({$definition}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
-        return $this->execute($sql);
+        return $this->execute("CREATE TABLE `{$tableName}` ({$definition}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     }
 
     /**
-     * Drop table
-     * @param string $tableName Table name
-     * @return bool Success
+     * Drop a table if it exists
      */
     protected function dropTable($tableName) {
+        self::assertIdentifier($tableName);
         if (!$this->tableExists($tableName)) {
-            error_log("Table {$tableName} does not exist");
-            return false;
+            return true;
         }
-
-        $sql = "DROP TABLE `{$tableName}`";
-        return $this->execute($sql);
+        return $this->execute("DROP TABLE `{$tableName}`");
     }
 
     /**
-     * Add column to table
-     * @param string $tableName Table name
-     * @param string $columnName Column name
-     * @param string $definition Column definition
-     * @return bool Success
+     * Add a column unless it exists
+     * @param string $definition e.g. "varchar(500) DEFAULT NULL AFTER `notes`"
      */
     protected function addColumn($tableName, $columnName, $definition) {
+        self::assertIdentifier($tableName);
+        self::assertIdentifier($columnName);
         if ($this->columnExists($tableName, $columnName)) {
-            error_log("Column {$columnName} already exists in {$tableName}");
-            return false;
+            return true;
         }
-
-        $sql = "ALTER TABLE `{$tableName}` ADD COLUMN `{$columnName}` {$definition}";
-        return $this->execute($sql);
+        return $this->execute("ALTER TABLE `{$tableName}` ADD COLUMN `{$columnName}` {$definition}");
     }
 
     /**
-     * Drop column from table
-     * @param string $tableName Table name
-     * @param string $columnName Column name
-     * @return bool Success
+     * Drop a column if it exists
      */
     protected function dropColumn($tableName, $columnName) {
+        self::assertIdentifier($tableName);
+        self::assertIdentifier($columnName);
         if (!$this->columnExists($tableName, $columnName)) {
-            error_log("Column {$columnName} does not exist in {$tableName}");
-            return false;
+            return true;
         }
-
-        $sql = "ALTER TABLE `{$tableName}` DROP COLUMN `{$columnName}`";
-        return $this->execute($sql);
+        return $this->execute("ALTER TABLE `{$tableName}` DROP COLUMN `{$columnName}`");
     }
 
     /**
-     * Modify column
-     * @param string $tableName Table name
-     * @param string $columnName Column name
-     * @param string $definition New column definition
-     * @return bool Success
+     * Change a column definition
      */
     protected function modifyColumn($tableName, $columnName, $definition) {
+        self::assertIdentifier($tableName);
+        self::assertIdentifier($columnName);
         if (!$this->columnExists($tableName, $columnName)) {
-            error_log("Column {$columnName} does not exist in {$tableName}");
-            return false;
+            throw new RuntimeException("Column {$tableName}.{$columnName} does not exist");
         }
-
-        $sql = "ALTER TABLE `{$tableName}` MODIFY COLUMN `{$columnName}` {$definition}";
-        return $this->execute($sql);
+        return $this->execute("ALTER TABLE `{$tableName}` MODIFY COLUMN `{$columnName}` {$definition}");
     }
 
     /**
-     * Add index
-     * @param string $tableName Table name
-     * @param string $indexName Index name
+     * Add an index unless it exists
      * @param string|array $columns Column(s)
-     * @param string $type Index type (INDEX, UNIQUE, FULLTEXT)
-     * @return bool Success
+     * @param string $type INDEX, UNIQUE or FULLTEXT
      */
     protected function addIndex($tableName, $indexName, $columns, $type = 'INDEX') {
-        if (is_array($columns)) {
-            $columns = '`' . implode('`, `', $columns) . '`';
-        } else {
-            $columns = "`{$columns}`";
+        self::assertIdentifier($tableName);
+        self::assertIdentifier($indexName);
+        $type = strtoupper($type);
+        if (!in_array($type, array('INDEX', 'UNIQUE', 'FULLTEXT'), true)) {
+            throw new InvalidArgumentException('Invalid index type: ' . $type);
         }
-
-        $sql = "ALTER TABLE `{$tableName}` ADD {$type} `{$indexName}` ({$columns})";
-        return $this->execute($sql);
+        if ($this->indexExists($tableName, $indexName)) {
+            return true;
+        }
+        $columns = (array)$columns;
+        foreach ($columns as $column) {
+            self::assertIdentifier($column);
+        }
+        $columnList = '`' . implode('`, `', $columns) . '`';
+        $keyword = $type === 'INDEX' ? 'INDEX' : $type . ' INDEX';
+        return $this->execute("ALTER TABLE `{$tableName}` ADD {$keyword} `{$indexName}` ({$columnList})");
     }
 
     /**
-     * Drop index
-     * @param string $tableName Table name
-     * @param string $indexName Index name
-     * @return bool Success
+     * Drop an index if it exists
      */
     protected function dropIndex($tableName, $indexName) {
-        $sql = "ALTER TABLE `{$tableName}` DROP INDEX `{$indexName}`";
-        return $this->execute($sql);
+        self::assertIdentifier($tableName);
+        self::assertIdentifier($indexName);
+        if (!$this->indexExists($tableName, $indexName)) {
+            return true;
+        }
+        return $this->execute("ALTER TABLE `{$tableName}` DROP INDEX `{$indexName}`");
     }
 
     /**
-     * Insert data
+     * Insert a row
      * @param string $tableName Table name
-     * @param array $data Data to insert
-     * @return bool Success
+     * @param array $data Column => value
+     * @return bool
      */
     protected function insert($tableName, $data) {
+        self::assertIdentifier($tableName);
         $columns = array_keys($data);
-        $values = array_values($data);
-
-        $columnList = '`' . implode('`, `', $columns) . '`';
-        $placeholders = ':' . implode(', :', $columns);
-
-        $sql = "INSERT INTO `{$tableName}` ({$columnList}) VALUES ({$placeholders})";
-
-        try {
-            $stmt = $this->conn->prepare($sql);
-            foreach ($data as $key => $value) {
-                $stmt->bindValue(':' . $key, $value);
-            }
-            return $stmt->execute();
-        } catch (PDOException $e) {
-            error_log('Migration insert error: ' . $e->getMessage());
-            return false;
+        $placeholders = array();
+        $params = array();
+        foreach ($columns as $i => $column) {
+            self::assertIdentifier($column);
+            $placeholders[] = ':p' . $i;
+            $params[':p' . $i] = $data[$column];
         }
+        return $this->execute(
+            "INSERT INTO `{$tableName}` (`" . implode('`, `', $columns) . "`) VALUES (" . implode(', ', $placeholders) . ")",
+            $params
+        );
+    }
+
+    private static function assertIdentifier($name) {
+        if (!is_string($name) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $name)) {
+            throw new InvalidArgumentException('Invalid SQL identifier: ' . (is_string($name) ? $name : gettype($name)));
+        }
+    }
+
+    private static function shorten($sql) {
+        $sql = preg_replace('/\s+/', ' ', trim($sql));
+        return strlen($sql) > 160 ? substr($sql, 0, 157) . '...' : $sql;
     }
 }

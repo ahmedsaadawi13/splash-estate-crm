@@ -1,245 +1,221 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # FILE: /deploy.sh
-
 ###############################################################################
 # SplashEstate CRM - Deployment Script
-# Automates deployment and setup process
+#
+# Checks the environment, prepares storage, backs up the database, runs the
+# database migrations and the automated test suite.
+#
+# Usage: ./deploy.sh [--skip-tests] [--skip-migrations] [--no-backup] [--help]
+#
+# Fresh install: create the database from database.sql first
+#   mysql -u USER -p < database.sql        (creates/uses `splashestate_crm`)
+# then run ./deploy.sh - migrations are idempotent and are only recorded.
+# Upgrades: ./deploy.sh applies pending migrations after taking a backup.
 ###############################################################################
 
-set -e  # Exit on error
+set -euo pipefail
+IFS=$'\n\t'
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
 
-# Functions
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+REQUIRED_PHP_VERSION_ID=70000   # PHP 7.0
+REQUIRED_PHP_VERSION="7.0"
+RUN_TESTS=1
+RUN_MIGRATIONS=1
+RUN_BACKUP=1
+
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+print_success() { printf '%b✓%b %s\n' "$GREEN" "$NC" "$1"; }
+print_error()   { printf '%b✗%b %s\n' "$RED" "$NC" "$1" >&2; }
+print_info()    { printf '%bℹ%b %s\n' "$BLUE" "$NC" "$1"; }
+print_warning() { printf '%b⚠%b %s\n' "$YELLOW" "$NC" "$1"; }
+print_header()  { printf '\n%b========================================%b\n%b%s%b\n%b========================================%b\n\n' "$BLUE" "$NC" "$BLUE" "$1" "$NC" "$BLUE" "$NC"; }
+
+usage() {
+    sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
+for arg in "$@"; do
+    case "$arg" in
+        --skip-tests) RUN_TESTS=0 ;;
+        --skip-migrations) RUN_MIGRATIONS=0 ;;
+        --no-backup) RUN_BACKUP=0 ;;
+        -h|--help) usage; exit 0 ;;
+        *) print_error "Unknown option: $arg"; usage; exit 2 ;;
+    esac
+done
 
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
+trap 'print_error "Deployment failed (line $LINENO). Nothing after this step was run."' ERR
 
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-print_header() {
-    echo ""
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}"
-    echo ""
-}
-
-# Check PHP version
 check_php() {
     print_info "Checking PHP version..."
-
-    if ! command -v php &> /dev/null; then
-        print_error "PHP is not installed"
+    if ! command -v php >/dev/null 2>&1; then
+        print_error "PHP is not installed or not in PATH"
         exit 1
     fi
-
-    PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
-    REQUIRED_VERSION="7.0"
-
-    if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$PHP_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
-        print_error "PHP version $REQUIRED_VERSION or higher is required (found $PHP_VERSION)"
+    local version_id version
+    version_id="$(php -r 'echo PHP_VERSION_ID;')"
+    version="$(php -r 'echo PHP_VERSION;')"
+    if [ "$version_id" -lt "$REQUIRED_PHP_VERSION_ID" ]; then
+        print_error "PHP $REQUIRED_PHP_VERSION or higher is required (found $version)"
         exit 1
     fi
-
-    print_success "PHP version $PHP_VERSION detected"
+    print_success "PHP $version detected"
 }
 
-# Check required PHP extensions
 check_extensions() {
     print_info "Checking required PHP extensions..."
-
-    REQUIRED_EXTENSIONS=("pdo" "pdo_mysql" "mbstring" "curl" "json")
-    MISSING_EXTENSIONS=()
-
-    for ext in "${REQUIRED_EXTENSIONS[@]}"; do
-        if ! php -m | grep -q "^$ext$"; then
-            MISSING_EXTENSIONS+=("$ext")
-        fi
-    done
-
-    if [ ${#MISSING_EXTENSIONS[@]} -ne 0 ]; then
-        print_error "Missing PHP extensions: ${MISSING_EXTENSIONS[*]}"
-        print_info "Install with: sudo apt-get install php-${MISSING_EXTENSIONS[*]}"
+    local missing
+    missing="$(php -r 'foreach (array("pdo","pdo_mysql","mbstring","curl","json","openssl") as $e) { if (!extension_loaded($e)) echo $e, " "; }')"
+    if [ -n "$missing" ]; then
+        print_error "Missing PHP extensions: $missing"
         exit 1
     fi
-
     print_success "All required PHP extensions are installed"
 }
 
-# Create .env file if it doesn't exist
-setup_env() {
+check_env_file() {
     if [ ! -f .env ]; then
-        print_info "Creating .env file from template..."
         cp .env.example .env
-        print_success ".env file created"
-        print_warning "Please configure .env file with your database credentials and API keys"
-    else
-        print_info ".env file already exists"
+        chmod 600 .env
+        print_warning ".env was missing and has been created from .env.example."
+        print_warning "Configure database credentials, BASE_URL and APP_ENV in .env, then run ./deploy.sh again."
+        exit 1
     fi
+    print_success ".env file found"
 }
 
-# Create necessary directories
-create_directories() {
-    print_info "Creating necessary directories..."
-
-    mkdir -p storage/uploads
-    mkdir -p storage/logs
-    mkdir -p storage/cache
-    mkdir -p database/migrations
-
-    # Set permissions
-    chmod -R 755 storage
-    chmod -R 755 database/migrations
-
-    print_success "Directories created and permissions set"
+# Print a config constant as PHP sees it (after .env parsing)
+config_value() {
+    php -r 'define("TEST_MODE", true); require "config/config.php"; $c = $argv[1]; echo defined($c) ? (is_bool(constant($c)) ? (constant($c) ? "true" : "false") : constant($c)) : "";' "$1"
 }
 
-# Run database migrations
-run_migrations() {
-    print_info "Running database migrations..."
-
-    if php migrate.php migrate; then
-        print_success "Migrations completed successfully"
-    else
-        print_warning "Migration warnings occurred (may be expected if already migrated)"
-    fi
-}
-
-# Set file permissions
-set_permissions() {
-    print_info "Setting file permissions..."
-
-    # Make scripts executable
-    chmod +x deploy.sh
-    chmod +x migrate.php
-
-    # Set web-writable directories
-    chmod -R 775 storage
-
-    print_success "Permissions configured"
-}
-
-# Validate environment
 validate_env() {
     print_info "Validating environment configuration..."
-
-    if [ ! -f .env ]; then
-        print_error ".env file not found"
-        return 1
-    fi
-
-    # Check critical variables
-    CRITICAL_VARS=("DB_NAME" "DB_USER" "BASE_URL")
-    MISSING_VARS=()
-
-    for var in "${CRITICAL_VARS[@]}"; do
-        if ! grep -q "^${var}=" .env; then
-            MISSING_VARS+=("$var")
+    local missing=()
+    local var
+    for var in DB_HOST DB_NAME DB_USER BASE_URL; do
+        if [ -z "$(config_value "$var")" ]; then
+            missing+=("$var")
         fi
     done
-
-    if [ ${#MISSING_VARS[@]} -ne 0 ]; then
-        print_warning "Missing critical environment variables: ${MISSING_VARS[*]}"
-        print_info "Please configure these in your .env file"
-    else
-        print_success "Environment validation passed"
+    if [ "${#missing[@]}" -ne 0 ]; then
+        print_error "Missing configuration: ${missing[*]}"
+        exit 1
     fi
+
+    if [ "$(config_value APP_ENV)" = "production" ]; then
+        if [ "$(config_value APP_DEBUG)" = "true" ]; then
+            print_warning "APP_DEBUG is true in production - set APP_DEBUG=false"
+        fi
+        case "$(config_value BASE_URL)" in
+            https://*) ;;
+            *) print_warning "BASE_URL should use https:// in production" ;;
+        esac
+        if [ "$(config_value MAIL_DRIVER)" = "log" ]; then
+            print_warning "MAIL_DRIVER=log in production - emails will not be delivered"
+        fi
+    fi
+    print_success "Environment validation passed"
 }
 
-# Test database connection
+create_directories() {
+    print_info "Preparing storage directories..."
+    mkdir -p storage/uploads storage/logs storage/cache storage/backups database/migrations
+    chmod 775 storage storage/uploads storage/logs storage/cache
+    chmod 700 storage/backups
+    print_success "Storage directories ready"
+}
+
 test_database() {
     print_info "Testing database connection..."
-
-    if php -r "
-        require_once 'config/config.php';
-        require_once 'app/core/Database.php';
-        try {
-            \$db = Database::getInstance();
-            \$conn = \$db->getConnection();
-            echo 'SUCCESS';
-        } catch (Exception \$e) {
-            echo 'FAILED: ' . \$e->getMessage();
-            exit(1);
-        }
-    " 2>&1 | grep -q "SUCCESS"; then
+    local output
+    if output="$(php -r '
+        define("TEST_MODE", true);
+        require "config/config.php";
+        require "app/core/Database.php";
+        try { Database::getInstance()->getConnection()->query("SELECT 1"); echo "OK"; }
+        catch (Exception $e) { echo $e->getMessage(); exit(1); }
+    ' 2>&1)"; then
         print_success "Database connection successful"
     else
-        print_error "Database connection failed"
-        print_info "Please check your database configuration in .env"
-        return 1
+        print_error "Database connection failed: $output"
+        exit 1
     fi
 }
 
-# Clear cache
-clear_cache() {
-    print_info "Clearing cache..."
+backup_database() {
+    if ! command -v mysqldump >/dev/null 2>&1; then
+        print_warning "mysqldump not found - skipping database backup"
+        return 0
+    fi
+    local file
+    file="storage/backups/$(config_value DB_NAME)-$(date +%Y%m%d-%H%M%S).sql.gz"
+    print_info "Backing up database to $file..."
+    MYSQL_PWD="$(config_value DB_PASS)" mysqldump --single-transaction --routines --no-tablespaces \
+        -h "$(config_value DB_HOST)" -u "$(config_value DB_USER)" "$(config_value DB_NAME)" | gzip > "$file"
+    chmod 600 "$file"
+    print_success "Backup written"
+}
 
+run_migrations() {
+    print_info "Running database migrations..."
+    php migrate.php migrate --no-color
+    print_success "Migrations completed"
+}
+
+run_tests() {
+    print_info "Running test suite (uses the separate splashestate_crm_test database)..."
+    php tests/run_tests.php
+    print_success "All tests passed"
+}
+
+clear_cache() {
     if [ -d storage/cache ]; then
-        rm -rf storage/cache/*
+        find storage/cache -mindepth 1 -delete
         print_success "Cache cleared"
     fi
 }
 
-# Main deployment flow
 main() {
     print_header "SplashEstate CRM Deployment"
 
-    print_info "Starting deployment process..."
-    echo ""
-
-    # Pre-deployment checks
     check_php
     check_extensions
-
-    # Setup
-    setup_env
-    create_directories
-    set_permissions
-
-    # Validate configuration
+    check_env_file
     validate_env
+    create_directories
+    test_database
 
-    # Database operations
-    if test_database; then
+    if [ "$RUN_MIGRATIONS" -eq 1 ]; then
+        if [ "$RUN_BACKUP" -eq 1 ]; then
+            backup_database
+        fi
         run_migrations
     else
-        print_warning "Skipping migrations due to database connection failure"
+        print_warning "Skipping migrations (--skip-migrations)"
     fi
 
-    # Post-deployment
+    if [ "$RUN_TESTS" -eq 1 ]; then
+        run_tests
+    else
+        print_warning "Skipping tests (--skip-tests)"
+    fi
+
     clear_cache
 
-    echo ""
-    print_header "Deployment Complete!"
-
-    print_success "SplashEstate CRM has been deployed successfully"
-    echo ""
+    print_header "Deployment Complete"
     print_info "Next steps:"
-    echo "  1. Configure your .env file with proper credentials"
-    echo "  2. Set up your web server to point to the /public directory"
-    echo "  3. Access the application and complete setup"
-    echo ""
-    print_info "For initial setup:"
-    echo "  - Admin login: admin@splashestate.com / admin123"
-    echo "  - Change admin password after first login"
-    echo ""
+    echo "  1. Point the web server document root at $ROOT_DIR/public"
+    echo "  2. Schedule cron.php (scheduled workflows, webhook retries)"
+    echo "  3. Change or remove the demo accounts from database.sql before going live"
 }
 
-# Run main deployment
 main

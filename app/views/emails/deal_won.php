@@ -1,29 +1,21 @@
 <?php
 // FILE: /app/views/emails/deal_won.php
+// Data: agent_name, deal_title, client_name, deal_value, commission, closed_date, deal_id
+require __DIR__ . '/_helpers.php';
+$preheader = 'Deal closed: ' . (isset($data['deal_title']) ? (string)$data['deal_title'] : '');
 $content = '
-<h2>🎉 Congratulations! Deal Closed Successfully!</h2>
-
-<p>Hi ' . htmlspecialchars($agent_name) . ',</p>
-
+<h2>Congratulations! Deal Closed Successfully!</h2>
+<p>Hi ' . $h('agent_name', 'there') . ',</p>
 <p>Great news! The deal has been successfully closed.</p>
-
 <div class="highlight">
-    <strong>Deal:</strong> ' . htmlspecialchars($deal_title) . '<br>
-    <strong>Client:</strong> ' . htmlspecialchars($client_name) . '<br>
-    <strong>Deal Value:</strong> $' . number_format($deal_value, 2) . '<br>
-    <strong>Commission:</strong> $' . number_format($commission, 2) . '<br>
-    <strong>Closed Date:</strong> ' . date('F j, Y', strtotime($closed_date)) . '
+    <strong>Deal:</strong> ' . $h('deal_title') . '<br>
+    <strong>Client:</strong> ' . $h('client_name') . '<br>
+    <strong>Deal Value:</strong> ' . $money('deal_value') . '<br>
+    <strong>Commission:</strong> ' . $money('commission') . '<br>
+    <strong>Closed Date:</strong> ' . $date('closed_date') . '
 </div>
-
 <p>Congratulations on closing this deal! Your hard work has paid off.</p>
-
-<p style="text-align: center;">
-    <a href="' . BASE_URL . '/deals/view/' . $deal_id . '" class="btn">View Deal Details</a>
-</p>
-
-<p>Keep up the excellent work!<br>
-SplashEstate CRM</p>
+<p style="text-align: center;"><a href="' . $link('deals/view/' . (int)(isset($data['deal_id']) ? $data['deal_id'] : 0)) . '" class="btn">View Deal Details</a></p>
+<p>Keep up the excellent work!<br>SplashEstate CRM</p>
 ';
-
-include ROOT_PATH . '/app/views/emails/layout.php';
-?>
+include __DIR__ . '/layout.php';

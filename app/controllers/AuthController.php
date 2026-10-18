@@ -294,12 +294,18 @@ class AuthController extends Controller {
         }
 
         $link = url('auth/reset/' . $token);
-        $html = '<p>Hello ' . e($user['first_name']) . ',</p>'
-              . '<p>We received a request to reset your SplashEstate CRM password. Click the link below to choose a new password:</p>'
-              . '<p><a href="' . e($link) . '">' . e($link) . '</a></p>'
-              . '<p>This link expires in 1 hour and can be used once. If you did not request a reset, you can ignore this email.</p>';
-
-        $sent = sendEmail($user['email'], 'Reset your SplashEstate CRM password', $html);
+        $sent = false;
+        try {
+            require_once APP_PATH . '/helpers/EmailService.php';
+            $emailService = new EmailService();
+            $sent = (bool)$emailService->sendPasswordReset($user['email'], array(
+                'first_name' => $user['first_name'],
+                'reset_url' => $link,
+                'expires_minutes' => (int)(self::RESET_TTL / 60)
+            ));
+        } catch (Throwable $e) {
+            error_log('Password reset email failed: ' . $e->getMessage());
+        }
         if (!$sent) {
             error_log('Password reset email could not be sent to user ' . $user['id']);
             if (defined('APP_ENV') && APP_ENV === 'development' && defined('APP_DEBUG') && APP_DEBUG) {

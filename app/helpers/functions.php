@@ -56,7 +56,7 @@ function checkQuota($tenantId, $resource) {
             JOIN plans p ON ts.plan_id = p.id
             WHERE ts.tenant_id = :tenant_id
             AND ts.status = 'active'
-            AND (ts.end_date IS NULL OR ts.end_date > NOW())
+            AND (ts.end_date IS NULL OR ts.end_date >= CURDATE())
             LIMIT 1";
 
     $stmt = $conn->prepare($sql);

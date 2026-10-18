@@ -1,129 +1,106 @@
-<?php include APP_PATH . '/views/partials/header.php'; ?>
-
-<div class="container-fluid">
-    <div class="row mb-4">
-        <div class="col-md-6">
-            <h2>Workflow Automation</h2>
-            <p class="text-muted">Automate repetitive tasks and streamline your processes</p>
-        </div>
-        <div class="col-md-6 text-right">
-            <a href="/workflows/create" class="btn btn-primary">
-                <i class="fas fa-plus"></i> Create Workflow
-            </a>
-        </div>
+<?php
+// FILE: /app/views/workflows/index.php
+require APP_PATH . '/views/layouts/header.php';
+require_once APP_PATH . '/views/workflows/_helpers.php';
+?>
+<div class="page-header">
+    <div>
+        <h1>Workflows</h1>
+        <p class="text-muted small">Automate follow-ups, assignments and notifications when things happen in your CRM.</p>
     </div>
-
-    <!-- Filters -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <form method="GET" action="/workflows" class="form-inline">
-                <div class="form-group mr-3">
-                    <label for="status" class="mr-2">Status:</label>
-                    <select name="status" id="status" class="form-control" onchange="this.form.submit()">
-                        <option value="all" <?php echo $currentStatus === 'all' ? 'selected' : ''; ?>>All</option>
-                        <option value="active" <?php echo $currentStatus === 'active' ? 'selected' : ''; ?>>Active</option>
-                        <option value="inactive" <?php echo $currentStatus === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="trigger" class="mr-2">Trigger:</label>
-                    <select name="trigger" id="trigger" class="form-control" onchange="this.form.submit()">
-                        <option value="all" <?php echo $currentTrigger === 'all' ? 'selected' : ''; ?>>All Triggers</option>
-                        <?php foreach ($triggerTypes as $value => $label): ?>
-                            <option value="<?php echo $value; ?>" <?php echo $currentTrigger === $value ? 'selected' : ''; ?>>
-                                <?php echo $label; ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </form>
-        </div>
+    <div class="header-actions">
+        <a href="<?php echo e(url('workflows/create')); ?>" class="btn btn-primary">Create workflow</a>
     </div>
+</div>
 
+<div class="filters">
+    <form method="GET" action="<?php echo e(url('workflows/index')); ?>" class="filter-form">
+        <select name="status" class="form-control">
+            <option value="">All statuses</option>
+            <option value="active"<?php echo $filters['status'] === 'active' ? ' selected' : ''; ?>>Active</option>
+            <option value="inactive"<?php echo $filters['status'] === 'inactive' ? ' selected' : ''; ?>>Inactive</option>
+        </select>
+        <select name="trigger" class="form-control">
+            <option value="">All triggers</option>
+            <?php foreach ($triggerTypes as $value => $label): ?>
+                <option value="<?php echo e($value); ?>"<?php echo $filters['trigger_type'] === $value ? ' selected' : ''; ?>><?php echo e($label); ?></option>
+            <?php endforeach; ?>
+        </select>
+        <button type="submit" class="btn btn-secondary">Filter</button>
+        <?php if ($filters['status'] !== '' || $filters['trigger_type'] !== ''): ?>
+            <a href="<?php echo e(url('workflows/index')); ?>" class="btn btn-link">Clear</a>
+        <?php endif; ?>
+    </form>
+</div>
+
+<div class="card">
     <?php if (empty($workflows)): ?>
-        <div class="card">
-            <div class="card-body text-center py-5">
-                <i class="fas fa-project-diagram fa-4x text-muted mb-3"></i>
-                <h4>No Workflows Yet</h4>
-                <p class="text-muted">Create your first workflow to automate tasks and save time</p>
-                <a href="/workflows/create" class="btn btn-primary mt-3">
-                    <i class="fas fa-plus"></i> Create Your First Workflow
-                </a>
-            </div>
+        <div class="empty-state">
+            <h3>No workflows found</h3>
+            <p>Create a workflow to automate repetitive work, e.g. notify an agent and create a follow-up task for every new lead.</p>
+            <a href="<?php echo e(url('workflows/create')); ?>" class="btn btn-primary mt-2">Create workflow</a>
         </div>
     <?php else: ?>
-        <div class="row">
-            <?php foreach ($workflows as $workflow): ?>
-                <div class="col-md-6 col-lg-4 mb-4">
-                    <div class="card h-100">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-3">
-                                <h5 class="card-title mb-0"><?php echo htmlspecialchars($workflow['name']); ?></h5>
-                                <span class="badge badge-<?php echo $workflow['status'] === 'active' ? 'success' : 'secondary'; ?>">
-                                    <?php echo ucfirst($workflow['status']); ?>
-                                </span>
-                            </div>
-
-                            <?php if ($workflow['description']): ?>
-                                <p class="card-text text-muted small"><?php echo htmlspecialchars($workflow['description']); ?></p>
-                            <?php endif; ?>
-
-                            <div class="mb-3">
-                                <span class="badge badge-info">
-                                    <i class="fas fa-bolt"></i> <?php echo $triggerTypes[$workflow['trigger_type']]; ?>
-                                </span>
-                            </div>
-
-                            <!-- Statistics -->
-                            <div class="row text-center small mb-3">
-                                <div class="col-4">
-                                    <div class="text-muted">Total</div>
-                                    <div class="font-weight-bold"><?php echo $workflow['stats']['total_executions']; ?></div>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Trigger</th>
+                        <th>Actions</th>
+                        <th>Status</th>
+                        <th>Runs</th>
+                        <th>Last run</th>
+                        <th class="text-right">Manage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($workflows as $wf): ?>
+                        <?php $wfId = (int)$wf['id']; ?>
+                        <tr>
+                            <td>
+                                <a href="<?php echo e(url('workflows/edit/' . $wfId)); ?>"><strong><?php echo e($wf['name']); ?></strong></a>
+                                <?php if (!empty($wf['description'])): ?>
+                                    <div class="small text-muted"><?php echo e(View::truncate((string)$wf['description'], 90)); ?></div>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo e(wf_trigger_summary($wf, $triggerTypes)); ?></td>
+                            <td><?php echo (int)$wf['action_count']; ?></td>
+                            <td><?php echo wf_status_badge($wf['status']); ?></td>
+                            <td>
+                                <?php echo (int)$wf['total_executions']; ?>
+                                <?php if ((int)$wf['total_executions'] > 0): ?>
+                                    <div class="small">
+                                        <span class="text-success"><?php echo (int)$wf['successful_executions']; ?> ok</span>
+                                        <?php if ((int)$wf['failed_executions'] > 0): ?>
+                                            / <span class="text-danger"><?php echo (int)$wf['failed_executions']; ?> failed</span>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+                            <td class="small"><?php echo e(View::formatDate($wf['last_execution'] ?? '')); ?></td>
+                            <td class="text-right">
+                                <div class="d-flex gap-1" style="justify-content:flex-end;">
+                                    <a href="<?php echo e(url('workflows/edit/' . $wfId)); ?>" class="btn btn-sm btn-secondary">Edit</a>
+                                    <a href="<?php echo e(url('workflows/executions/' . $wfId)); ?>" class="btn btn-sm btn-outline">History</a>
+                                    <form method="POST" action="<?php echo e(url('workflows/toggle/' . $wfId)); ?>" class="inline-form">
+                                        <?php echo csrf_field(); ?>
+                                        <button type="submit" class="btn btn-sm btn-outline"><?php echo $wf['status'] === 'active' ? 'Deactivate' : 'Activate'; ?></button>
+                                    </form>
+                                    <form method="POST" action="<?php echo e(url('workflows/delete/' . $wfId)); ?>" class="inline-form" onsubmit="return confirm('Delete this workflow and its run history?');">
+                                        <?php echo csrf_field(); ?>
+                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                    </form>
                                 </div>
-                                <div class="col-4">
-                                    <div class="text-muted">Success</div>
-                                    <div class="font-weight-bold text-success"><?php echo $workflow['stats']['successful']; ?></div>
-                                </div>
-                                <div class="col-4">
-                                    <div class="text-muted">Failed</div>
-                                    <div class="font-weight-bold text-danger"><?php echo $workflow['stats']['failed']; ?></div>
-                                </div>
-                            </div>
-
-                            <?php if ($workflow['stats']['last_execution']): ?>
-                                <div class="text-muted small mb-3">
-                                    <i class="fas fa-clock"></i> Last run: <?php echo date('M j, Y g:i A', strtotime($workflow['stats']['last_execution'])); ?>
-                                </div>
-                            <?php endif; ?>
-
-                            <!-- Actions -->
-                            <div class="btn-group btn-group-sm w-100" role="group">
-                                <a href="/workflows/edit/<?php echo $workflow['id']; ?>" class="btn btn-outline-primary" title="Edit">
-                                    <i class="fas fa-edit"></i>
-                                </a>
-                                <a href="/workflows/executions/<?php echo $workflow['id']; ?>" class="btn btn-outline-info" title="View History">
-                                    <i class="fas fa-history"></i>
-                                </a>
-                                <a href="/workflows/toggle/<?php echo $workflow['id']; ?>"
-                                   class="btn btn-outline-<?php echo $workflow['status'] === 'active' ? 'warning' : 'success'; ?>"
-                                   title="<?php echo $workflow['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>"
-                                   onclick="return confirm('Are you sure you want to <?php echo $workflow['status'] === 'active' ? 'deactivate' : 'activate'; ?> this workflow?')">
-                                    <i class="fas fa-power-off"></i>
-                                </a>
-                                <a href="/workflows/delete/<?php echo $workflow['id']; ?>"
-                                   class="btn btn-outline-danger"
-                                   title="Delete"
-                                   onclick="return confirm('Are you sure you want to delete this workflow? This action cannot be undone.')">
-                                    <i class="fas fa-trash"></i>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            <?php endforeach; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
     <?php endif; ?>
 </div>
 
-<?php include APP_PATH . '/views/partials/footer.php'; ?>
+<?php echo wf_pager($page, $totalPages, 'workflows/index', array('status' => $filters['status'], 'trigger' => $filters['trigger_type'])); ?>
+
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

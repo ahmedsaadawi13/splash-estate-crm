@@ -1,173 +1,85 @@
-<?php include APP_PATH . '/views/partials/header.php'; ?>
-
-<div class="container-fluid">
-    <div class="row mb-4">
-        <div class="col-md-12">
-            <h2>Workflow Executions: <?php echo htmlspecialchars($workflow['name']); ?></h2>
-            <nav aria-label="breadcrumb">
-                <ol class="breadcrumb">
-                    <li class="breadcrumb-item"><a href="/workflows">Workflows</a></li>
-                    <li class="breadcrumb-item active">Executions</li>
-                </ol>
-            </nav>
+<?php
+// FILE: /app/views/workflows/executions.php
+require APP_PATH . '/views/layouts/header.php';
+require_once APP_PATH . '/views/workflows/_helpers.php';
+$workflowId = (int)$workflow['id'];
+?>
+<div class="page-header">
+    <div>
+        <div class="breadcrumb">
+            <a href="<?php echo e(url('workflows/index')); ?>">Workflows</a> /
+            <a href="<?php echo e(url('workflows/edit/' . $workflowId)); ?>"><?php echo e($workflow['name']); ?></a> / History
         </div>
+        <h1>Run history</h1>
+        <p class="text-muted small"><?php echo e(wf_trigger_summary($workflow, $triggerTypes)); ?> &middot; <?php echo wf_status_badge($workflow['status']); ?></p>
     </div>
-
-    <!-- Statistics -->
-    <div class="row mb-4">
-        <div class="col-md-3">
-            <div class="card">
-                <div class="card-body text-center">
-                    <h3><?php echo $totalExecutions; ?></h3>
-                    <p class="text-muted mb-0">Total Executions</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card">
-                <div class="card-body text-center">
-                    <h3 class="text-success">
-                        <?php
-                        $successful = 0;
-                        foreach ($executions as $exec) {
-                            if ($exec['status'] === 'completed') $successful++;
-                        }
-                        echo $successful;
-                        ?>
-                    </h3>
-                    <p class="text-muted mb-0">Successful</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card">
-                <div class="card-body text-center">
-                    <h3 class="text-danger">
-                        <?php
-                        $failed = 0;
-                        foreach ($executions as $exec) {
-                            if ($exec['status'] === 'failed') $failed++;
-                        }
-                        echo $failed;
-                        ?>
-                    </h3>
-                    <p class="text-muted mb-0">Failed</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card">
-                <div class="card-body text-center">
-                    <h3 class="text-warning">
-                        <?php
-                        $pending = 0;
-                        foreach ($executions as $exec) {
-                            if (in_array($exec['status'], array('pending', 'running'))) $pending++;
-                        }
-                        echo $pending;
-                        ?>
-                    </h3>
-                    <p class="text-muted mb-0">Pending/Running</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Executions List -->
-    <div class="card">
-        <div class="card-header">
-            <h5 class="mb-0">Execution History</h5>
-        </div>
-        <div class="card-body">
-            <?php if (empty($executions)): ?>
-                <div class="text-center py-5">
-                    <i class="fas fa-history fa-3x text-muted mb-3"></i>
-                    <p class="text-muted">No executions yet</p>
-                </div>
-            <?php else: ?>
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Status</th>
-                                <th>Started</th>
-                                <th>Completed</th>
-                                <th>Duration</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($executions as $execution): ?>
-                                <tr>
-                                    <td>
-                                        <a href="/workflows/execution/<?php echo $execution['id']; ?>">
-                                            #<?php echo $execution['id']; ?>
-                                        </a>
-                                    </td>
-                                    <td>
-                                        <?php
-                                        $statusClass = array(
-                                            'completed' => 'success',
-                                            'failed' => 'danger',
-                                            'running' => 'info',
-                                            'pending' => 'warning',
-                                            'cancelled' => 'secondary'
-                                        );
-                                        $class = $statusClass[$execution['status']] ?? 'secondary';
-                                        ?>
-                                        <span class="badge badge-<?php echo $class; ?>">
-                                            <?php echo ucfirst($execution['status']); ?>
-                                        </span>
-                                    </td>
-                                    <td><?php echo date('M j, Y g:i A', strtotime($execution['created_at'])); ?></td>
-                                    <td>
-                                        <?php if ($execution['completed_at']): ?>
-                                            <?php echo date('M j, Y g:i A', strtotime($execution['completed_at'])); ?>
-                                        <?php else: ?>
-                                            <span class="text-muted">-</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <?php if ($execution['completed_at']): ?>
-                                            <?php
-                                            $start = strtotime($execution['created_at']);
-                                            $end = strtotime($execution['completed_at']);
-                                            $duration = $end - $start;
-                                            echo $duration . 's';
-                                            ?>
-                                        <?php else: ?>
-                                            <span class="text-muted">-</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <a href="/workflows/execution/<?php echo $execution['id']; ?>" class="btn btn-sm btn-outline-primary">
-                                            <i class="fas fa-eye"></i> View Details
-                                        </a>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-
-                <!-- Pagination -->
-                <?php if ($totalPages > 1): ?>
-                    <nav aria-label="Page navigation">
-                        <ul class="pagination justify-content-center">
-                            <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-                                <li class="page-item <?php echo $i === $currentPage ? 'active' : ''; ?>">
-                                    <a class="page-link" href="/workflows/executions/<?php echo $workflow['id']; ?>?page=<?php echo $i; ?>">
-                                        <?php echo $i; ?>
-                                    </a>
-                                </li>
-                            <?php endfor; ?>
-                        </ul>
-                    </nav>
-                <?php endif; ?>
-            <?php endif; ?>
-        </div>
+    <div class="header-actions">
+        <a href="<?php echo e(url('workflows/edit/' . $workflowId)); ?>" class="btn btn-secondary">Edit workflow</a>
     </div>
 </div>
 
-<?php include APP_PATH . '/views/partials/footer.php'; ?>
+<div class="stats-grid">
+    <div class="stat-card"><div class="stat-number"><?php echo (int)$stats['total_executions']; ?></div><div class="stat-label">Total runs</div></div>
+    <div class="stat-card"><div class="stat-number text-success"><?php echo (int)$stats['successful']; ?></div><div class="stat-label">Completed</div></div>
+    <div class="stat-card"><div class="stat-number text-danger"><?php echo (int)$stats['failed']; ?></div><div class="stat-label">Failed</div></div>
+    <div class="stat-card"><div class="stat-number"><?php echo (int)$stats['running']; ?></div><div class="stat-label">In progress</div></div>
+</div>
+
+<div class="card">
+    <?php if (empty($executions)): ?>
+        <div class="empty-state">
+            <h3>No runs yet</h3>
+            <p>This workflow has not been triggered. Use "Test run" on the edit page to try it.</p>
+        </div>
+    <?php else: ?>
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Record</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                        <th>Started</th>
+                        <th>Finished</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($executions as $ex): ?>
+                        <?php
+                        $data = WorkflowEngine::decodeJson($ex['trigger_data']);
+                        $recordLabel = '-';
+                        if (!empty($data['entity_type']) && !empty($data['entity_id'])) {
+                            $recordLabel = ucfirst($data['entity_type']) . ' #' . (int)$data['entity_id'];
+                            if (!empty($data['full_name']) || !empty($data['title'])) {
+                                $recordLabel .= ' - ' . (!empty($data['full_name']) ? $data['full_name'] : $data['title']);
+                            }
+                        }
+                        ?>
+                        <tr>
+                            <td><?php echo (int)$ex['id']; ?></td>
+                            <td>
+                                <?php echo e($recordLabel); ?>
+                                <?php if (!empty($data['_test_run'])): ?> <span class="badge badge-info">Test</span><?php endif; ?>
+                            </td>
+                            <td><?php echo wf_status_badge($ex['status']); ?></td>
+                            <td class="small">
+                                <?php echo (int)$ex['action_completed']; ?>/<?php echo (int)$ex['action_total']; ?> done
+                                <?php if ((int)$ex['action_failed'] > 0): ?>, <span class="text-danger"><?php echo (int)$ex['action_failed']; ?> failed</span><?php endif; ?>
+                                <?php if ((int)$ex['action_scheduled'] > 0): ?>, <span class="text-muted"><?php echo (int)$ex['action_scheduled']; ?> scheduled</span><?php endif; ?>
+                            </td>
+                            <td class="small"><?php echo e(View::formatDate($ex['started_at'] ?? '')); ?></td>
+                            <td class="small"><?php echo e(View::formatDate($ex['completed_at'] ?? '')); ?></td>
+                            <td class="text-right"><a href="<?php echo e(url('workflows/execution/' . (int)$ex['id'])); ?>" class="btn btn-sm btn-outline">Details</a></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
+</div>
+
+<?php echo wf_pager($page, $totalPages, 'workflows/executions/' . $workflowId); ?>
+
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

@@ -1,214 +1,116 @@
-<?php include APP_PATH . '/views/partials/header.php'; ?>
-
-<div class="container-fluid">
-    <div class="row mb-4">
-        <div class="col-md-12">
-            <h2>Execution Details: #<?php echo $execution['id']; ?></h2>
-            <nav aria-label="breadcrumb">
-                <ol class="breadcrumb">
-                    <li class="breadcrumb-item"><a href="/workflows">Workflows</a></li>
-                    <li class="breadcrumb-item"><a href="/workflows/executions/<?php echo $workflow['id']; ?>">Executions</a></li>
-                    <li class="breadcrumb-item active">#<?php echo $execution['id']; ?></li>
-                </ol>
-            </nav>
+<?php
+// FILE: /app/views/workflows/execution_detail.php
+require APP_PATH . '/views/layouts/header.php';
+require_once APP_PATH . '/views/workflows/_helpers.php';
+$workflowId = (int)$execution['workflow_id'];
+$entityType = isset($triggerData['entity_type']) ? (string)$triggerData['entity_type'] : '';
+$entityId = isset($triggerData['entity_id']) ? (int)$triggerData['entity_id'] : 0;
+$recordLink = WorkflowEngine::entityLink($entityType, $entityId);
+$displayData = $triggerData;
+unset($displayData['_test_run']);
+?>
+<div class="page-header">
+    <div>
+        <div class="breadcrumb">
+            <a href="<?php echo e(url('workflows/index')); ?>">Workflows</a> /
+            <a href="<?php echo e(url('workflows/edit/' . $workflowId)); ?>"><?php echo e($execution['workflow_name']); ?></a> /
+            <a href="<?php echo e(url('workflows/executions/' . $workflowId)); ?>">History</a> / #<?php echo (int)$execution['id']; ?>
         </div>
+        <h1>Execution #<?php echo (int)$execution['id']; ?> <?php echo wf_status_badge($execution['status']); ?>
+            <?php if (!empty($triggerData['_test_run'])): ?><span class="badge badge-info">Test run</span><?php endif; ?>
+        </h1>
     </div>
-
-    <div class="row">
-        <div class="col-md-8">
-            <!-- Execution Info -->
-            <div class="card mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0">Execution Information</h5>
-                </div>
-                <div class="card-body">
-                    <div class="row mb-3">
-                        <div class="col-md-3">
-                            <strong>Workflow:</strong>
-                        </div>
-                        <div class="col-md-9">
-                            <a href="/workflows/edit/<?php echo $workflow['id']; ?>">
-                                <?php echo htmlspecialchars($workflow['name']); ?>
-                            </a>
-                        </div>
-                    </div>
-
-                    <div class="row mb-3">
-                        <div class="col-md-3">
-                            <strong>Status:</strong>
-                        </div>
-                        <div class="col-md-9">
-                            <?php
-                            $statusClass = array(
-                                'completed' => 'success',
-                                'failed' => 'danger',
-                                'running' => 'info',
-                                'pending' => 'warning',
-                                'cancelled' => 'secondary'
-                            );
-                            $class = $statusClass[$execution['status']] ?? 'secondary';
-                            ?>
-                            <span class="badge badge-<?php echo $class; ?>">
-                                <?php echo ucfirst($execution['status']); ?>
-                            </span>
-                        </div>
-                    </div>
-
-                    <div class="row mb-3">
-                        <div class="col-md-3">
-                            <strong>Started:</strong>
-                        </div>
-                        <div class="col-md-9">
-                            <?php echo date('M j, Y g:i:s A', strtotime($execution['created_at'])); ?>
-                        </div>
-                    </div>
-
-                    <div class="row mb-3">
-                        <div class="col-md-3">
-                            <strong>Completed:</strong>
-                        </div>
-                        <div class="col-md-9">
-                            <?php if ($execution['completed_at']): ?>
-                                <?php echo date('M j, Y g:i:s A', strtotime($execution['completed_at'])); ?>
-                                <?php
-                                $start = strtotime($execution['created_at']);
-                                $end = strtotime($execution['completed_at']);
-                                $duration = $end - $start;
-                                ?>
-                                <span class="text-muted">(<?php echo $duration; ?>s)</span>
-                            <?php else: ?>
-                                <span class="text-muted">Not completed</span>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <?php if ($execution['error_message']): ?>
-                        <div class="row mb-3">
-                            <div class="col-md-3">
-                                <strong>Error:</strong>
-                            </div>
-                            <div class="col-md-9">
-                                <div class="alert alert-danger mb-0">
-                                    <pre class="mb-0"><?php echo htmlspecialchars(json_encode($execution['error_message'], JSON_PRETTY_PRINT)); ?></pre>
-                                </div>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-
-            <!-- Trigger Data -->
-            <?php if ($execution['trigger_data']): ?>
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="mb-0">Trigger Data</h5>
-                    </div>
-                    <div class="card-body">
-                        <pre><?php echo htmlspecialchars(json_encode($execution['trigger_data'], JSON_PRETTY_PRINT)); ?></pre>
-                    </div>
-                </div>
-            <?php endif; ?>
-
-            <!-- Action Logs -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Action Execution Logs</h5>
-                </div>
-                <div class="card-body">
-                    <?php if (empty($actionLogs)): ?>
-                        <p class="text-muted">No actions executed yet</p>
-                    <?php else: ?>
-                        <div class="timeline">
-                            <?php foreach ($actionLogs as $log): ?>
-                                <div class="timeline-item mb-4">
-                                    <div class="d-flex">
-                                        <div class="mr-3">
-                                            <?php
-                                            $iconClass = array(
-                                                'completed' => 'success',
-                                                'failed' => 'danger',
-                                                'pending' => 'warning',
-                                                'skipped' => 'secondary'
-                                            );
-                                            $icon = array(
-                                                'completed' => 'check-circle',
-                                                'failed' => 'times-circle',
-                                                'pending' => 'clock',
-                                                'skipped' => 'ban'
-                                            );
-                                            $class = $iconClass[$log['status']] ?? 'secondary';
-                                            $iconName = $icon[$log['status']] ?? 'circle';
-                                            ?>
-                                            <i class="fas fa-<?php echo $iconName; ?> fa-2x text-<?php echo $class; ?>"></i>
-                                        </div>
-                                        <div class="flex-grow-1">
-                                            <div class="card">
-                                                <div class="card-header">
-                                                    <div class="d-flex justify-content-between align-items-center">
-                                                        <strong>Action: <?php echo ucfirst(str_replace('_', ' ', $log['action_type'])); ?></strong>
-                                                        <span class="badge badge-<?php echo $class; ?>">
-                                                            <?php echo ucfirst($log['status']); ?>
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                <div class="card-body">
-                                                    <?php if ($log['result']): ?>
-                                                        <div class="mb-2">
-                                                            <strong>Result:</strong>
-                                                            <pre class="mb-0"><?php echo htmlspecialchars(json_encode($log['result'], JSON_PRETTY_PRINT)); ?></pre>
-                                                        </div>
-                                                    <?php endif; ?>
-
-                                                    <?php if ($log['error_message']): ?>
-                                                        <div class="alert alert-danger mb-0">
-                                                            <strong>Error:</strong>
-                                                            <pre class="mb-0"><?php echo htmlspecialchars(json_encode($log['error_message'], JSON_PRETTY_PRINT)); ?></pre>
-                                                        </div>
-                                                    <?php endif; ?>
-
-                                                    <div class="text-muted small mt-2">
-                                                        <?php if ($log['started_at']): ?>
-                                                            Started: <?php echo date('g:i:s A', strtotime($log['started_at'])); ?>
-                                                        <?php endif; ?>
-                                                        <?php if ($log['completed_at']): ?>
-                                                            | Completed: <?php echo date('g:i:s A', strtotime($log['completed_at'])); ?>
-                                                            <?php
-                                                            $start = strtotime($log['started_at']);
-                                                            $end = strtotime($log['completed_at']);
-                                                            $duration = $end - $start;
-                                                            ?>
-                                                            (<?php echo $duration; ?>s)
-                                                        <?php endif; ?>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-md-4">
-            <!-- Actions -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Actions</h5>
-                </div>
-                <div class="card-body">
-                    <a href="/workflows/executions/<?php echo $workflow['id']; ?>" class="btn btn-outline-primary btn-block">
-                        <i class="fas fa-arrow-left"></i> Back to Executions
-                    </a>
-                    <a href="/workflows/edit/<?php echo $workflow['id']; ?>" class="btn btn-outline-secondary btn-block">
-                        <i class="fas fa-edit"></i> Edit Workflow
-                    </a>
-                </div>
-            </div>
-        </div>
+    <div class="header-actions">
+        <a href="<?php echo e(url('workflows/executions/' . $workflowId)); ?>" class="btn btn-secondary">Back to history</a>
     </div>
 </div>
 
-<?php include APP_PATH . '/views/partials/footer.php'; ?>
+<div class="layout-main-side">
+    <div>
+        <div class="card">
+            <div class="card-header"><h2>Actions</h2></div>
+            <?php if (empty($actionLogs)): ?>
+                <div class="card-body"><p class="text-muted">No actions were run.</p></div>
+            <?php else: ?>
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Step</th>
+                                <th>Action</th>
+                                <th>Status</th>
+                                <th>Result</th>
+                                <th>Timing</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($actionLogs as $i => $log): ?>
+                                <tr>
+                                    <td><?php echo $i + 1; ?></td>
+                                    <td>
+                                        <?php echo e(isset($actionTypes[$log['action_type']]) ? $actionTypes[$log['action_type']]['name'] : $log['action_type']); ?>
+                                        <?php if ((int)$log['delay_minutes'] > 0): ?>
+                                            <div class="small text-muted">delay <?php echo (int)$log['delay_minutes']; ?> min</div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo wf_status_badge($log['status']); ?></td>
+                                    <td>
+                                        <?php if (!empty($log['result'])): ?><div><?php echo e($log['result']); ?></div><?php endif; ?>
+                                        <?php if (!empty($log['error_message'])): ?><div class="text-danger"><?php echo e($log['error_message']); ?></div><?php endif; ?>
+                                    </td>
+                                    <td class="small">
+                                        <?php if ($log['status'] === 'scheduled'): ?>
+                                            Due <?php echo e(View::formatDate($log['scheduled_for'] ?? '')); ?>
+                                        <?php else: ?>
+                                            <?php if (!empty($log['scheduled_for'])): ?>Scheduled <?php echo e(View::formatDate($log['scheduled_for'])); ?><br><?php endif; ?>
+                                            Started <?php echo e(View::formatDate($log['started_at'] ?? '')); ?><br>
+                                            Finished <?php echo e(View::formatDate($log['completed_at'] ?? '')); ?>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><h2>Trigger data</h2></div>
+            <div class="card-body">
+                <pre class="code-block" style="max-height:400px;overflow:auto;"><?php echo e(json_encode($displayData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)); ?></pre>
+            </div>
+        </div>
+    </div>
+
+    <aside>
+        <div class="card">
+            <div class="card-header"><h2>Summary</h2></div>
+            <div class="card-body">
+                <dl class="detail-list">
+                    <dt>Workflow</dt><dd><a href="<?php echo e(url('workflows/edit/' . $workflowId)); ?>"><?php echo e($execution['workflow_name']); ?></a></dd>
+                    <dt>Trigger</dt><dd><?php echo e(isset($triggerTypes[$execution['trigger_type']]) ? $triggerTypes[$execution['trigger_type']] : $execution['trigger_type']); ?></dd>
+                    <dt>Record</dt>
+                    <dd>
+                        <?php if ($recordLink !== null): ?>
+                            <a href="<?php echo e(url($recordLink)); ?>"><?php echo e(ucfirst($entityType) . ' #' . $entityId); ?></a>
+                        <?php else: ?>
+                            -
+                        <?php endif; ?>
+                    </dd>
+                    <dt>Status</dt><dd><?php echo wf_status_badge($execution['status']); ?></dd>
+                    <dt>Started</dt><dd><?php echo e(View::formatDate($execution['started_at'] ?? '')); ?></dd>
+                    <dt>Finished</dt><dd><?php echo e(View::formatDate($execution['completed_at'] ?? '')); ?></dd>
+                </dl>
+                <?php if (!empty($execution['error_message'])): ?>
+                    <div class="alert alert-error mt-2"><?php echo e($execution['error_message']); ?></div>
+                <?php endif; ?>
+                <?php if ($execution['status'] === 'running'): ?>
+                    <p class="small text-muted mt-2">Waiting for delayed actions; they run on the next scheduler (cron) pass after they are due.</p>
+                <?php endif; ?>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

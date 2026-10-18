@@ -445,3 +445,86 @@ body {
         flex-direction: column;
     }
 }
+
+/* ==========================================================
+   Shared UI components (cards, grids, forms, utilities)
+   Use these classes in views - the app does not load Bootstrap.
+   ========================================================== */
+
+.page-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+.header-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.breadcrumb { font-size: 13px; color: #7f8c8d; margin-bottom: 0.5rem; }
+.breadcrumb a { color: #3498db; text-decoration: none; }
+
+.card { background: #fff; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
+.card-header { padding: 0.9rem 1.25rem; border-bottom: 1px solid #ecf0f1; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.card-header h2, .card-header h3 { font-size: 1.05rem; margin: 0; }
+.card-body { padding: 1.25rem; }
+.card-footer { padding: 0.9rem 1.25rem; border-top: 1px solid #ecf0f1; }
+
+.grid { display: grid; gap: 1.25rem; }
+.grid-2 { display: grid; gap: 1.25rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid-3 { display: grid; gap: 1.25rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-4 { display: grid; gap: 1.25rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.layout-main-side { display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+@media (max-width: 900px) {
+    .grid-2, .grid-3, .grid-4, .layout-main-side { grid-template-columns: 1fr; }
+}
+
+.form-row { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.form-group label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+.form-help { display: block; font-size: 12px; color: #7f8c8d; margin-top: 0.25rem; }
+.form-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
+.required { color: #e74c3c; }
+textarea.form-control { min-height: 90px; }
+
+.detail-list { display: grid; grid-template-columns: 160px 1fr; gap: 0.5rem 1rem; }
+.detail-list dt { font-weight: 600; color: #7f8c8d; }
+.detail-list dd { margin: 0; }
+
+.table-responsive { overflow-x: auto; }
+.empty-state { text-align: center; padding: 3rem 1rem; color: #7f8c8d; }
+.empty-state h3 { color: #2c3e50; margin-bottom: 0.5rem; }
+
+.btn-warning { background-color: #f39c12; color: #fff; border: none; }
+.btn-outline { background: transparent; border: 1px solid #bdc3c7; color: #2c3e50; }
+.btn-outline:hover { background: #ecf0f1; }
+.inline-form { display: inline; }
+
+.text-muted { color: #7f8c8d; }
+.text-success { color: #27ae60; }
+.text-danger { color: #e74c3c; }
+.text-warning { color: #f39c12; }
+.text-right { text-align: right; }
+.text-center { text-align: center; }
+.small { font-size: 12px; }
+.mt-1 { margin-top: 0.5rem; } .mt-2 { margin-top: 1rem; } .mt-3 { margin-top: 1.5rem; }
+.mb-1 { margin-bottom: 0.5rem; } .mb-2 { margin-bottom: 1rem; } .mb-3 { margin-bottom: 1.5rem; }
+.d-flex { display: flex; } .gap-1 { gap: 0.5rem; } .gap-2 { gap: 1rem; }
+.justify-between { justify-content: space-between; } .align-center { align-items: center; } .flex-wrap { flex-wrap: wrap; }
+
+pre, .code-block { background: #2c3e50; color: #ecf0f1; padding: 0.75rem 1rem; border-radius: 4px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+
+/* Lead score grades */
+.grade { display: inline-block; min-width: 28px; text-align: center; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 700; color: #fff; }
+.grade-A { background: #27ae60; } .grade-B { background: #2ecc71; } .grade-C { background: #f39c12; }
+.grade-D { background: #e67e22; } .grade-F { background: #e74c3c; }
+.progress { background: #ecf0f1; border-radius: 4px; height: 8px; overflow: hidden; }
+.progress-bar { background: #3498db; height: 100%; }
+
+/* Timeline (activity, execution logs, score history) */
+.timeline { list-style: none; border-left: 2px solid #ecf0f1; padding-left: 1rem; }
+.timeline li { position: relative; margin-bottom: 1rem; }
+.timeline li::before { content: ''; position: absolute; left: -1.4rem; top: 0.35rem; width: 10px; height: 10px; border-radius: 50%; background: #3498db; }
+.timeline .timeline-meta { font-size: 12px; color: #7f8c8d; }
+
+/* Kanban board (deal pipeline) */
+.kanban { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; }
+.kanban-column { background: #ecf0f1; border-radius: 6px; min-width: 240px; flex: 0 0 240px; padding: 0.75rem; }
+.kanban-column h3 { font-size: 0.9rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; }
+.kanban-card { background: #fff; border-radius: 4px; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+.kanban-card a { color: #2c3e50; font-weight: 600; text-decoration: none; }
+
+/* Navbar notification badge */
+.nav-badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: #e74c3c; color: #fff; font-size: 11px; text-align: center; margin-left: 3px; }
+.navbar-menu { flex-wrap: wrap; }

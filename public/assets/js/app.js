@@ -131,6 +131,10 @@ function ajax(url, method, data, callback) {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url, true);
     xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    if (typeof CSRF_TOKEN !== 'undefined' && method.toUpperCase() !== 'GET') {
+        xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+    }
 
     xhr.onload = function() {
         if (xhr.status >= 200 && xhr.status < 300) {

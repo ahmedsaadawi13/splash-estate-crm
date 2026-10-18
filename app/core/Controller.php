@@ -14,7 +14,7 @@ class Controller {
      * @return object Model instance
      */
     protected function model($model) {
-        require_once '../app/models/' . $model . '.php';
+        require_once APP_PATH . '/models/' . $model . '.php';
         return new $model();
     }
 
@@ -27,11 +27,15 @@ class Controller {
         // Extract data array to variables
         extract($data);
 
-        // Check if view file exists
-        if (file_exists('../app/views/' . $view . '.php')) {
-            require_once '../app/views/' . $view . '.php';
+        // Make the CSRF token available to every view
+        $csrfToken = $this->generateCsrfToken();
+
+        $viewFile = APP_PATH . '/views/' . $view . '.php';
+        if (file_exists($viewFile)) {
+            require $viewFile;
         } else {
-            die('View does not exist: ' . $view);
+            http_response_code(500);
+            die('View does not exist: ' . htmlspecialchars($view, ENT_QUOTES, 'UTF-8'));
         }
     }
 
@@ -40,8 +44,74 @@ class Controller {
      * @param string $url URL to redirect to
      */
     protected function redirect($url) {
-        header('Location: ' . BASE_URL . '/' . $url);
+        header('Location: ' . BASE_URL . '/' . ltrim($url, '/'));
         exit;
+    }
+
+    /**
+     * Require a granular RBAC permission (see can() in helpers/functions.php).
+     * Redirects with a flash message, or returns 403 JSON for AJAX/JSON requests.
+     * @param string $permissionSlug Permission slug, e.g. 'leads.edit'
+     */
+    protected function requirePermission($permissionSlug) {
+        $this->requireLogin();
+        if (!can($permissionSlug)) {
+            if ($this->wantsJson()) {
+                $this->jsonResponse(array('success' => false, 'message' => 'Permission denied'), 403);
+            }
+            $this->setFlash('error', 'You do not have permission to perform this action.');
+            $this->redirect('dashboard/index');
+        }
+    }
+
+    /**
+     * Whether the current request expects a JSON response
+     * @return bool
+     */
+    protected function wantsJson() {
+        $accept = isset($_SERVER['HTTP_ACCEPT']) ? $_SERVER['HTTP_ACCEPT'] : '';
+        $requestedWith = isset($_SERVER['HTTP_X_REQUESTED_WITH']) ? $_SERVER['HTTP_X_REQUESTED_WITH'] : '';
+        return strpos($accept, 'application/json') !== false || strtolower($requestedWith) === 'xmlhttprequest';
+    }
+
+    /**
+     * Abort with 404 Not Found
+     * @param string $message Message to show
+     */
+    protected function notFound($message = 'Page not found') {
+        http_response_code(404);
+        if ($this->wantsJson()) {
+            $this->jsonResponse(array('success' => false, 'message' => $message), 404);
+        }
+        echo '<h1>404</h1><p>' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</p>';
+        exit;
+    }
+
+    /**
+     * Abort unless the request is POST with a valid CSRF token.
+     * Accepts the token from the csrf_token field or the X-CSRF-Token header.
+     * @param string $redirectTo Where to send the user on failure (non-JSON requests)
+     */
+    protected function requirePostWithCsrf($redirectTo = 'dashboard/index') {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            if ($this->wantsJson()) {
+                $this->jsonResponse(array('success' => false, 'message' => 'Method not allowed'), 405);
+            }
+            $this->redirect($redirectTo);
+        }
+
+        $token = isset($_POST['csrf_token']) ? $_POST['csrf_token'] : '';
+        if ($token === '' && isset($_SERVER['HTTP_X_CSRF_TOKEN'])) {
+            $token = $_SERVER['HTTP_X_CSRF_TOKEN'];
+        }
+
+        if (!$this->verifyCsrfToken($token)) {
+            if ($this->wantsJson()) {
+                $this->jsonResponse(array('success' => false, 'message' => 'Invalid security token'), 419);
+            }
+            $this->setFlash('error', 'Invalid security token. Please try again.');
+            $this->redirect($redirectTo);
+        }
     }
 
     /**
@@ -150,7 +220,7 @@ class Controller {
      * @return bool
      */
     protected function verifyCsrfToken($token) {
-        return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+        return isset($_SESSION['csrf_token']) && is_string($token) && hash_equals($_SESSION['csrf_token'], $token);
     }
 
     /**

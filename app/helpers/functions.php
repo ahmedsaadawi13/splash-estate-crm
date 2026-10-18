@@ -68,8 +68,14 @@ function checkQuota($tenantId, $resource) {
         return false; // No active subscription
     }
 
+    // Only known resource tables may be counted (prevents SQL injection via $resource)
+    $allowedResources = array('leads', 'properties', 'users');
+    if (!in_array($resource, $allowedResources, true)) {
+        return false;
+    }
+
     // Get current usage
-    $usageSql = "SELECT COUNT(*) as count FROM {$resource} WHERE tenant_id = :tenant_id";
+    $usageSql = "SELECT COUNT(*) as count FROM `{$resource}` WHERE tenant_id = :tenant_id";
     $usageStmt = $conn->prepare($usageSql);
     $usageStmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
     $usageStmt->execute();
@@ -106,8 +112,8 @@ function logActivity($userId, $tenantId, $action, $entity, $entityId) {
     $db = new Database();
     $conn = $db->connect();
 
-    $sql = "INSERT INTO activity_logs (user_id, tenant_id, action, entity_type, entity_id, created_at)
-            VALUES (:user_id, :tenant_id, :action, :entity_type, :entity_id, NOW())";
+    $sql = "INSERT INTO activity_logs (user_id, tenant_id, action, entity_type, entity_id, ip_address, user_agent, created_at)
+            VALUES (:user_id, :tenant_id, :action, :entity_type, :entity_id, :ip_address, :user_agent, NOW())";
 
     $stmt = $conn->prepare($sql);
     $stmt->bindValue(':user_id', $userId, PDO::PARAM_INT);
@@ -115,6 +121,8 @@ function logActivity($userId, $tenantId, $action, $entity, $entityId) {
     $stmt->bindValue(':action', $action);
     $stmt->bindValue(':entity_type', $entity);
     $stmt->bindValue(':entity_id', $entityId, PDO::PARAM_INT);
+    $stmt->bindValue(':ip_address', isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null);
+    $stmt->bindValue(':user_agent', isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : null);
     $stmt->execute();
 }
 
@@ -151,7 +159,7 @@ function uploadFile($file, $tenantId) {
     }
 
     // Generate unique filename
-    $uniqueName = uniqid() . '_' . time() . '.' . $fileExt;
+    $uniqueName = bin2hex(random_bytes(16)) . '.' . $fileExt;
 
     // Create tenant directory if not exists
     $tenantDir = UPLOAD_PATH . '/' . $tenantId;
@@ -193,9 +201,14 @@ function deleteFile($filePath) {
  * @return bool Success status
  */
 function sendEmail($to, $subject, $message) {
-    // TODO: Implement email sending with SMTP
-    // For now, just return true
-    return true;
+    try {
+        require_once APP_PATH . '/helpers/EmailService.php';
+        $emailService = new EmailService();
+        return (bool)$emailService->sendEmail($to, $subject, $message);
+    } catch (Exception $e) {
+        error_log('sendEmail failed: ' . $e->getMessage());
+        return false;
+    }
 }
 
 /**
@@ -275,7 +288,7 @@ function triggerWebhook($tenantId, $eventType, $data) {
         require_once APP_PATH . '/helpers/WebhookService.php';
         $webhookService = new WebhookService();
         return $webhookService->trigger($tenantId, $eventType, $data);
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         error_log('Webhook trigger failed: ' . $e->getMessage());
         return false;
     }
@@ -290,14 +303,63 @@ function triggerWebhook($tenantId, $eventType, $data) {
 function hasPermission($userId, $permissionSlug) {
     static $userPermissions = array();
 
-    // Cache permissions per user
+    // Cache permissions per user (per request)
     if (!isset($userPermissions[$userId])) {
-        require_once APP_PATH . '/models/Role.php';
-        $roleModel = new Role();
-        $userPermissions[$userId] = $roleModel->getUserPermissions($userId);
+        $userPermissions[$userId] = loadUserPermissions($userId);
     }
 
-    return in_array($permissionSlug, $userPermissions[$userId]);
+    return in_array($permissionSlug, $userPermissions[$userId], true);
+}
+
+/**
+ * Load permission slugs for a user.
+ * Uses the user's RBAC roles (user_roles). Users with no RBAC roles fall back
+ * to the system role matching their legacy users.role column
+ * (tenant_admin -> "Tenant Admin", agent -> "Agent"), so existing accounts keep working.
+ * @param int $userId User ID
+ * @return array Permission slugs
+ */
+function loadUserPermissions($userId) {
+    try {
+        $db = new Database();
+        $conn = $db->connect();
+
+        $stmt = $conn->prepare(
+            "SELECT DISTINCT p.slug
+             FROM permissions p
+             INNER JOIN role_permissions rp ON p.id = rp.permission_id
+             INNER JOIN user_roles ur ON rp.role_id = ur.role_id
+             WHERE ur.user_id = :user_id"
+        );
+        $stmt->execute(array(':user_id' => (int)$userId));
+        $slugs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        if (!empty($slugs)) {
+            return $slugs;
+        }
+
+        // Has explicit roles but none grant permissions -> no permissions
+        $check = $conn->prepare("SELECT COUNT(*) FROM user_roles WHERE user_id = :user_id");
+        $check->execute(array(':user_id' => (int)$userId));
+        if ((int)$check->fetchColumn() > 0) {
+            return array();
+        }
+
+        // Legacy fallback: map users.role to a system role
+        $stmt = $conn->prepare(
+            "SELECT DISTINCT p.slug
+             FROM users u
+             INNER JOIN roles r ON r.slug = u.role AND r.is_system = 1
+             INNER JOIN role_permissions rp ON rp.role_id = r.id
+             INNER JOIN permissions p ON p.id = rp.permission_id
+             WHERE u.id = :user_id"
+        );
+        $stmt->execute(array(':user_id' => (int)$userId));
+        return $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable $e) {
+        error_log('loadUserPermissions failed: ' . $e->getMessage());
+        return array();
+    }
 }
 
 /**
@@ -334,3 +396,183 @@ function getUserRoles($userId) {
 
     return $userRoles[$userId];
 }
+
+/**
+ * Escape a value for HTML output
+ * @param mixed $value Value
+ * @return string
+ */
+function e($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Build an absolute application URL
+ * @param string $path Path such as "leads/view/5"
+ * @return string
+ */
+function url($path = '') {
+    return BASE_URL . '/' . ltrim($path, '/');
+}
+
+/**
+ * Get (creating if needed) the session CSRF token
+ * @return string
+ */
+function csrf_token() {
+    if (!isset($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/**
+ * Hidden CSRF input for forms
+ * @return string HTML
+ */
+function csrf_field() {
+    return '<input type="hidden" name="csrf_token" value="' . e(csrf_token()) . '">';
+}
+
+/**
+ * Map of application events to workflow trigger types.
+ * Event names use dot notation (same names as webhook events).
+ * @return array event => workflow trigger_type
+ */
+function getWorkflowTriggerMap() {
+    return array(
+        'lead.created' => 'lead_created',
+        'lead.updated' => 'lead_updated',
+        'lead.status_changed' => 'lead_status_changed',
+        'client.created' => 'client_created',
+        'property.created' => 'property_created',
+        'deal.created' => 'deal_created',
+        'deal.stage_changed' => 'deal_status_changed',
+        'deal.won' => 'deal_won',
+        'deal.lost' => 'deal_lost',
+        'task.created' => 'task_created',
+        'task.completed' => 'task_completed'
+    );
+}
+
+/**
+ * Dispatch an application event to every subscriber:
+ *   1. Lead scoring (recalculates the lead score on lead.* create/update events)
+ *   2. Workflow automation (runs active workflows whose trigger matches)
+ *   3. Outgoing webhooks (delivers to subscribed endpoints)
+ *
+ * Failures are logged and never break the request that raised the event.
+ * Events raised while another event is being handled (e.g. by a workflow
+ * action) are limited in depth to prevent infinite loops.
+ *
+ * @param int $tenantId Tenant ID
+ * @param string $event Event name, e.g. 'lead.created', 'deal.won'
+ * @param array $data Entity data (should include 'id')
+ * @return void
+ */
+function dispatchEvent($tenantId, $event, $data) {
+    static $depth = 0;
+
+    if ($depth >= 3 || empty($tenantId)) {
+        return;
+    }
+    $depth++;
+
+    try {
+        $data = is_array($data) ? $data : array();
+
+        // 1. Lead scoring first so workflows/webhooks see the fresh score
+        if (in_array($event, array('lead.created', 'lead.updated', 'lead.status_changed'), true) && !empty($data['id'])) {
+            try {
+                require_once APP_PATH . '/helpers/LeadScoringEngine.php';
+                $scoring = new LeadScoringEngine();
+                $scoring->calculateScore((int)$data['id'], $event);
+                $score = $scoring->getLeadScore((int)$data['id']);
+                if ($score) {
+                    $data['score'] = (int)$score['score'];
+                    $data['grade'] = $score['grade'];
+                }
+            } catch (Throwable $e) {
+                error_log("Lead scoring failed for {$event}: " . $e->getMessage());
+            }
+        }
+
+        // 2. Workflow automation
+        $triggerMap = getWorkflowTriggerMap();
+        if (isset($triggerMap[$event])) {
+            try {
+                require_once APP_PATH . '/helpers/WorkflowEngine.php';
+                $engine = new WorkflowEngine();
+                $engine->trigger($tenantId, $triggerMap[$event], $data);
+            } catch (Throwable $e) {
+                error_log("Workflow trigger failed for {$event}: " . $e->getMessage());
+            }
+        }
+
+        // 3. Outgoing webhooks
+        triggerWebhook($tenantId, $event, $data);
+    } catch (Throwable $e) {
+        error_log("dispatchEvent failed for {$event}: " . $e->getMessage());
+    }
+
+    $depth--;
+}
+
+/**
+ * Create an in-app notification for a user
+ * @param int $tenantId Tenant ID
+ * @param int $userId Recipient user ID
+ * @param string $title Title
+ * @param string $message Message body
+ * @param string|null $link Relative app path (e.g. "leads/view/5")
+ * @param string $type info, success, warning, task, lead, deal, workflow
+ * @return int|false Notification ID
+ */
+function createNotification($tenantId, $userId, $title, $message = '', $link = null, $type = 'info') {
+    try {
+        $db = new Database();
+        $conn = $db->connect();
+        $stmt = $conn->prepare(
+            "INSERT INTO notifications (tenant_id, user_id, type, title, message, link)
+             VALUES (:tenant_id, :user_id, :type, :title, :message, :link)"
+        );
+        $stmt->execute(array(
+            ':tenant_id' => (int)$tenantId,
+            ':user_id' => (int)$userId,
+            ':type' => substr((string)$type, 0, 50),
+            ':title' => substr((string)$title, 0, 255),
+            ':message' => (string)$message,
+            ':link' => $link !== null ? substr((string)$link, 0, 512) : null
+        ));
+        return (int)$conn->lastInsertId();
+    } catch (Throwable $e) {
+        error_log('createNotification failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Number of unread notifications for the logged-in user (0 on error)
+ * @return int
+ */
+function unreadNotificationCount() {
+    static $count = null;
+    if ($count !== null) {
+        return $count;
+    }
+    $count = 0;
+    if (empty($_SESSION['user_id'])) {
+        return $count;
+    }
+    try {
+        $db = new Database();
+        $conn = $db->connect();
+        $stmt = $conn->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :user_id AND is_read = 0");
+        $stmt->execute(array(':user_id' => (int)$_SESSION['user_id']));
+        $count = (int)$stmt->fetchColumn();
+    } catch (Throwable $e) {
+        $count = 0;
+    }
+    return $count;
+}
+

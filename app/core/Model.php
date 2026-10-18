@@ -37,8 +37,8 @@ class Model {
 
         if (!empty($filters)) {
             foreach ($filters as $field => $value) {
-                if ($value !== '' && $value !== null) {
-                    $sql .= " AND {$field} = :{$field}";
+                if ($value !== '' && $value !== null && self::isValidIdentifier($field)) {
+                    $sql .= " AND `{$field}` = :{$field}";
                     $params[":{$field}"] = $value;
                 }
             }
@@ -80,10 +80,11 @@ class Model {
      * @return int|bool Last insert ID or false
      */
     public function create($data) {
+        self::assertValidIdentifiers(array_keys($data));
         $fields = array_keys($data);
         $values = array_values($data);
 
-        $fieldList = implode(', ', $fields);
+        $fieldList = '`' . implode('`, `', $fields) . '`';
         $placeholders = ':' . implode(', :', $fields);
 
         $sql = "INSERT INTO {$this->table} ({$fieldList}) VALUES ({$placeholders})";
@@ -107,9 +108,13 @@ class Model {
      * @return bool Success status
      */
     public function update($id, $tenantId, $data) {
+        if (empty($data)) {
+            return true;
+        }
+        self::assertValidIdentifiers(array_keys($data));
         $fields = array();
         foreach (array_keys($data) as $field) {
-            $fields[] = "{$field} = :{$field}";
+            $fields[] = "`{$field}` = :{$field}";
         }
         $fieldList = implode(', ', $fields);
 
@@ -152,8 +157,8 @@ class Model {
 
         if (!empty($filters)) {
             foreach ($filters as $field => $value) {
-                if ($value !== '' && $value !== null) {
-                    $sql .= " AND {$field} = :{$field}";
+                if ($value !== '' && $value !== null && self::isValidIdentifier($field)) {
+                    $sql .= " AND `{$field}` = :{$field}";
                     $params[":{$field}"] = $value;
                 }
             }
@@ -186,10 +191,15 @@ class Model {
 
         if (!empty($searchTerm) && !empty($searchFields)) {
             $searchConditions = array();
-            foreach ($searchFields as $field) {
-                $searchConditions[] = "{$field} LIKE :search";
+            foreach ($searchFields as $i => $field) {
+                if (self::isValidIdentifier($field)) {
+                    // Native prepares do not allow re-using one placeholder
+                    $searchConditions[] = "`{$field}` LIKE :search{$i}";
+                }
             }
-            $sql .= " AND (" . implode(' OR ', $searchConditions) . ")";
+            if (!empty($searchConditions)) {
+                $sql .= " AND (" . implode(' OR ', $searchConditions) . ")";
+            }
         }
 
         $sql .= " ORDER BY created_at DESC LIMIT :limit OFFSET :offset";
@@ -198,7 +208,11 @@ class Model {
         $stmt->bindValue(':tenant_id', $tenantId, PDO::PARAM_INT);
 
         if (!empty($searchTerm) && !empty($searchFields)) {
-            $stmt->bindValue(':search', '%' . $searchTerm . '%');
+            foreach ($searchFields as $i => $field) {
+                if (self::isValidIdentifier($field)) {
+                    $stmt->bindValue(':search' . $i, '%' . $searchTerm . '%');
+                }
+            }
         }
 
         $stmt->bindValue(':limit', (int)$perPage, PDO::PARAM_INT);
@@ -206,5 +220,100 @@ class Model {
 
         $stmt->execute();
         return $stmt->fetchAll();
+    }
+
+    /**
+     * Get a record by primary key WITHOUT tenant scoping.
+     * Only for tables that have no tenant_id column (child tables such as
+     * workflow_actions, lead_scores, webhook_logs). Callers must verify tenant
+     * ownership through the parent record.
+     * @param int $id Record ID
+     * @return array|false
+     */
+    public function findById($id) {
+        $stmt = $this->conn->prepare("SELECT * FROM {$this->table} WHERE id = :id LIMIT 1");
+        $stmt->bindValue(':id', (int)$id, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetch();
+    }
+
+    /**
+     * Update a record by primary key WITHOUT tenant scoping (see findById()).
+     * @param int $id Record ID
+     * @param array $data Column => value
+     * @return bool
+     */
+    public function updateById($id, $data) {
+        if (empty($data)) {
+            return true;
+        }
+        self::assertValidIdentifiers(array_keys($data));
+        $fields = array();
+        foreach (array_keys($data) as $field) {
+            $fields[] = "`{$field}` = :{$field}";
+        }
+        $stmt = $this->conn->prepare("UPDATE {$this->table} SET " . implode(', ', $fields) . " WHERE id = :id");
+        foreach ($data as $key => $value) {
+            $stmt->bindValue(':' . $key, $value);
+        }
+        $stmt->bindValue(':id', (int)$id, PDO::PARAM_INT);
+        return $stmt->execute();
+    }
+
+    /**
+     * Delete a record by primary key WITHOUT tenant scoping (see findById()).
+     * @param int $id Record ID
+     * @return bool
+     */
+    public function deleteById($id) {
+        $stmt = $this->conn->prepare("DELETE FROM {$this->table} WHERE id = :id");
+        $stmt->bindValue(':id', (int)$id, PDO::PARAM_INT);
+        return $stmt->execute();
+    }
+
+    /**
+     * Get every record for a tenant (no pagination). Use for small sets
+     * such as dropdown lists, rules or bulk recalculation.
+     * @param int $tenantId Tenant ID
+     * @param string $orderBy Column to order by
+     * @return array
+     */
+    public function getAllForTenant($tenantId, $orderBy = 'id') {
+        if (!self::isValidIdentifier($orderBy)) {
+            $orderBy = 'id';
+        }
+        $stmt = $this->conn->prepare("SELECT * FROM {$this->table} WHERE tenant_id = :tenant_id ORDER BY `{$orderBy}` ASC");
+        $stmt->bindValue(':tenant_id', (int)$tenantId, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Expose the PDO connection (for helpers/services that run custom queries)
+     * @return PDO
+     */
+    public function getConnection() {
+        return $this->conn;
+    }
+
+    /**
+     * Whether a string is a safe SQL identifier (column/table name)
+     * @param string $name Identifier
+     * @return bool
+     */
+    public static function isValidIdentifier($name) {
+        return is_string($name) && preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $name) === 1;
+    }
+
+    /**
+     * Throw if any identifier is unsafe to interpolate into SQL
+     * @param array $names Identifiers
+     */
+    protected static function assertValidIdentifiers($names) {
+        foreach ($names as $name) {
+            if (!self::isValidIdentifier($name)) {
+                throw new InvalidArgumentException('Invalid column name: ' . $name);
+            }
+        }
     }
 }

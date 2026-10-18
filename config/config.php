@@ -26,8 +26,16 @@ if (file_exists(dirname(__DIR__) . '/.env')) {
                 $value = $matches[2];
             }
 
+            // Convert boolean-like strings so "false" is not truthy
+            $lower = strtolower($value);
+            if ($lower === 'true') {
+                $value = true;
+            } elseif ($lower === 'false') {
+                $value = false;
+            }
+
             // Set as constant if not already defined
-            if (!defined($key)) {
+            if ($key !== '' && !defined($key)) {
                 define($key, $value);
             }
         }
@@ -72,11 +80,14 @@ if (!defined('STRIPE_WEBHOOK_SECRET')) define('STRIPE_WEBHOOK_SECRET', '');
 if (!defined('GOOGLE_MAPS_API_KEY')) define('GOOGLE_MAPS_API_KEY', '');
 
 // Paths
-define('ROOT_PATH', dirname(__DIR__));
-define('APP_PATH', ROOT_PATH . '/app');
-define('PUBLIC_PATH', ROOT_PATH . '/public');
-define('STORAGE_PATH', ROOT_PATH . '/storage');
-define('UPLOAD_PATH', STORAGE_PATH . '/uploads');
+if (!defined('ROOT_PATH')) define('ROOT_PATH', dirname(__DIR__));
+if (!defined('APP_PATH')) define('APP_PATH', ROOT_PATH . '/app');
+if (!defined('PUBLIC_PATH')) define('PUBLIC_PATH', ROOT_PATH . '/public');
+if (!defined('STORAGE_PATH')) define('STORAGE_PATH', ROOT_PATH . '/storage');
+if (!defined('UPLOAD_PATH')) define('UPLOAD_PATH', STORAGE_PATH . '/uploads');
+
+// Cron / scheduled jobs: shared secret for the HTTP cron endpoint (empty = CLI only)
+if (!defined('CRON_SECRET')) define('CRON_SECRET', '');
 
 // Timezone
 if (!defined('APP_TIMEZONE')) define('APP_TIMEZONE', 'UTC');

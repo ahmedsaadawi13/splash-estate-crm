@@ -132,6 +132,7 @@ CREATE TABLE `leads` (
   `budget_min` decimal(15,2) DEFAULT NULL,
   `budget_max` decimal(15,2) DEFAULT NULL,
   `notes` text DEFAULT NULL,
+  `tags` varchar(500) DEFAULT NULL COMMENT 'Comma-separated tags',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -529,6 +530,7 @@ CREATE TABLE `workflows` (
   `conditions` text DEFAULT NULL COMMENT 'JSON array of conditions',
   `status` enum('active','inactive') DEFAULT 'active',
   `execution_order` int(11) DEFAULT 0,
+  `last_run_at` timestamp NULL DEFAULT NULL COMMENT 'Last run of a scheduled workflow',
   `created_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
@@ -590,14 +592,18 @@ CREATE TABLE `workflow_action_logs` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `execution_id` int(11) NOT NULL,
   `action_id` int(11) NOT NULL,
-  `status` enum('pending','completed','failed','skipped') DEFAULT 'pending',
+  `status` enum('pending','scheduled','completed','failed','skipped') DEFAULT 'pending',
   `result` text DEFAULT NULL COMMENT 'Action execution result',
   `error_message` text DEFAULT NULL,
+  `scheduled_for` datetime DEFAULT NULL COMMENT 'When a delayed action is due (status=scheduled)',
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
   `executed_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `execution_id` (`execution_id`),
   KEY `action_id` (`action_id`),
+  KEY `idx_due` (`status`, `scheduled_for`),
   CONSTRAINT `fk_actionlog_execution` FOREIGN KEY (`execution_id`) REFERENCES `workflow_executions` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_actionlog_action` FOREIGN KEY (`action_id`) REFERENCES `workflow_actions` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -668,6 +674,63 @@ CREATE TABLE `lead_score_history` (
   KEY `lead_id` (`lead_id`),
   KEY `idx_created_at` (`created_at`),
   CONSTRAINT `fk_score_history_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- Table: notifications
+-- In-app notifications for users
+-- --------------------------------------------------------
+
+CREATE TABLE `notifications` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `tenant_id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `type` varchar(50) DEFAULT 'info' COMMENT 'info, success, warning, task, lead, deal, workflow',
+  `title` varchar(255) NOT NULL,
+  `message` text DEFAULT NULL,
+  `link` varchar(512) DEFAULT NULL COMMENT 'Relative app path, e.g. leads/view/5',
+  `is_read` tinyint(1) DEFAULT 0,
+  `read_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `tenant_id` (`tenant_id`),
+  KEY `idx_user_unread` (`user_id`, `is_read`),
+  CONSTRAINT `fk_notification_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_notification_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- Table: password_resets
+-- One-time password reset tokens (only the SHA-256 hash is stored)
+-- --------------------------------------------------------
+
+CREATE TABLE `password_resets` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `token_hash` char(64) NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `used_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `token_hash` (`token_hash`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `fk_reset_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- Table: login_attempts
+-- Login attempt tracking for brute-force protection
+-- --------------------------------------------------------
+
+CREATE TABLE `login_attempts` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `email` varchar(255) NOT NULL,
+  `ip_address` varchar(45) NOT NULL,
+  `success` tinyint(1) DEFAULT 0,
+  `attempted_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_email_time` (`email`, `attempted_at`),
+  KEY `idx_ip_time` (`ip_address`, `attempted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
@@ -892,7 +955,12 @@ INSERT INTO `permissions` (`name`, `slug`, `description`, `module`) VALUES
 ('Manage Roles', 'roles.manage', 'Manage roles and permissions', 'settings'),
 ('Manage Webhooks', 'webhooks.manage', 'Configure webhooks', 'settings'),
 ('View Subscription', 'subscription.view', 'View subscription details', 'settings'),
-('Manage Subscription', 'subscription.manage', 'Upgrade/downgrade subscription', 'settings');
+('Manage Subscription', 'subscription.manage', 'Upgrade/downgrade subscription', 'settings'),
+
+-- Automation permissions
+('Manage Workflows', 'workflows.manage', 'Create and manage workflow automations', 'automation'),
+('Manage Lead Scoring', 'scoring.manage', 'Configure lead scoring rules', 'automation'),
+('View Audit Log', 'audit.view', 'View the activity/audit log', 'settings');
 
 -- Insert default system roles
 INSERT INTO `roles` (`tenant_id`, `name`, `slug`, `description`, `is_system`) VALUES
@@ -925,7 +993,8 @@ SELECT 3, id FROM permissions WHERE slug IN (
     'deals.view', 'deals.create', 'deals.edit', 'deals.delete',
     'tasks.view', 'tasks.create', 'tasks.edit', 'tasks.delete',
     'reports.view', 'reports.export',
-    'users.manage'
+    'users.manage',
+    'workflows.manage', 'scoring.manage'
 );
 
 -- Assign permissions to Viewer role
@@ -940,3 +1009,23 @@ SELECT 4, id FROM permissions WHERE slug IN (
 );
 
 -- End of seed data
+
+-- Assign RBAC roles to demo users based on their legacy role
+-- (users without any user_roles row fall back to their users.role, see can())
+INSERT INTO `user_roles` (`user_id`, `role_id`)
+SELECT u.id, r.id FROM users u
+INNER JOIN roles r ON r.slug = u.role AND r.is_system = 1
+WHERE u.role IN ('tenant_admin', 'agent');
+
+-- Default lead scoring rules for demo tenants
+INSERT INTO `lead_scoring_rules` (`tenant_id`, `name`, `description`, `rule_type`, `field_name`, `operator`, `field_value`, `points`, `execution_order`)
+SELECT t.id, r.name, r.description, r.rule_type, r.field_name, r.operator, r.field_value, r.points, r.execution_order
+FROM tenants t
+CROSS JOIN (
+    SELECT 'Has email address' AS name, 'Lead can be contacted by email' AS description, 'demographic' AS rule_type, 'email' AS field_name, 'is_not_empty' AS operator, NULL AS field_value, 10 AS points, 1 AS execution_order
+    UNION ALL SELECT 'Has phone number', 'Lead can be called', 'demographic', 'phone', 'is_not_empty', NULL, 10, 2
+    UNION ALL SELECT 'High budget (500k+)', 'Maximum budget of at least 500,000', 'demographic', 'budget_max', 'greater_than_or_equal', '500000', 25, 3
+    UNION ALL SELECT 'Referral source', 'Referred leads convert better', 'behavioral', 'source', 'equals', 'Referral', 20, 4
+    UNION ALL SELECT 'Wants to buy', 'Buyer intent', 'behavioral', 'interest_type', 'equals', 'buy', 15, 5
+    UNION ALL SELECT 'Qualified or beyond', 'Lead progressed in the pipeline', 'engagement', 'status', 'in', 'qualified,proposal,negotiation', 20, 6
+) r;

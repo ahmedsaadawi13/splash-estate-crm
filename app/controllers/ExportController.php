@@ -3,7 +3,12 @@
 
 /**
  * SplashEstate CRM - Export Controller
- * Handles data export requests
+ * CSV downloads and printable ("Save as PDF") reports for list pages.
+ * Exports honour the same query-string filters as the list pages and are
+ * always scoped to the current tenant.
+ *
+ * Permissions: leads -> leads.export; other modules -> {module}.view AND reports.export
+ * (there are no per-module export permissions for them).
  */
 
 class ExportController extends Controller {
@@ -15,174 +20,117 @@ class ExportController extends Controller {
         $this->exportService = new ExportService();
     }
 
-    /**
-     * Export leads to CSV
-     */
+    /** Export leads to CSV */
     public function leadsCSV() {
-        $this->requireLogin();
-
-        $tenantId = $this->getTenantId();
-        $leadModel = $this->model('Lead');
-
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['status'])) $filters['status'] = $_GET['status'];
-        if (!empty($_GET['assigned_to'])) $filters['assigned_to'] = $_GET['assigned_to'];
-        if (!empty($_GET['search'])) $filters['search'] = $_GET['search'];
-
-        // Get all leads (no pagination for export)
-        $leads = $leadModel->getLeadsWithUser($tenantId, 1, 10000, $filters);
-
-        // Export to CSV
-        $filename = 'leads_' . date('Y-m-d_His') . '.csv';
-        $this->exportService->exportLeadsToCSV($leads, $filename);
+        $this->csv('leads');
     }
 
-    /**
-     * Export leads to PDF
-     */
+    /** Printable leads report (save as PDF from the browser) */
     public function leadsPDF() {
-        $this->requireLogin();
-
-        $tenantId = $this->getTenantId();
-        $leadModel = $this->model('Lead');
-
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['status'])) $filters['status'] = $_GET['status'];
-
-        // Get all leads
-        $leads = $leadModel->getLeadsWithUser($tenantId, 1, 10000, $filters);
-
-        // Generate HTML
-        $html = $this->exportService->generateLeadsReportHTML($leads);
-
-        // Export to PDF
-        $filename = 'leads_report_' . date('Y-m-d') . '.pdf';
-        $this->exportService->exportToPDF($html, $filename);
+        $this->printable('leads', 'Leads Report', 'landscape');
     }
 
-    /**
-     * Export clients to CSV
-     */
+    /** Export clients to CSV */
     public function clientsCSV() {
-        $this->requireLogin();
-
-        $tenantId = $this->getTenantId();
-        $clientModel = $this->model('Client');
-
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['client_type'])) $filters['client_type'] = $_GET['client_type'];
-        if (!empty($_GET['search'])) $filters['search'] = $_GET['search'];
-
-        // Get all clients
-        $clients = $clientModel->getClientsWithInfo($tenantId, 1, 10000, $filters);
-
-        // Export to CSV
-        $filename = 'clients_' . date('Y-m-d_His') . '.csv';
-        $this->exportService->exportClientsToCSV($clients, $filename);
+        $this->csv('clients');
     }
 
-    /**
-     * Export properties to CSV
-     */
+    /** Export properties to CSV */
     public function propertiesCSV() {
-        $this->requireLogin();
-
-        $tenantId = $this->getTenantId();
-        $propertyModel = $this->model('Property');
-
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['property_type'])) $filters['property_type'] = $_GET['property_type'];
-        if (!empty($_GET['status'])) $filters['status'] = $_GET['status'];
-        if (!empty($_GET['search'])) $filters['search'] = $_GET['search'];
-
-        // Get all properties
-        $properties = $propertyModel->getPropertiesWithInfo($tenantId, 1, 10000, $filters);
-
-        // Export to CSV
-        $filename = 'properties_' . date('Y-m-d_His') . '.csv';
-        $this->exportService->exportPropertiesToCSV($properties, $filename);
+        $this->csv('properties');
     }
 
-    /**
-     * Export properties to PDF
-     */
+    /** Printable properties report */
     public function propertiesPDF() {
-        $this->requireLogin();
-
-        $tenantId = $this->getTenantId();
-        $propertyModel = $this->model('Property');
-
-        // Get filters
-        $filters = array();
-        if (!empty($_GET['property_type'])) $filters['property_type'] = $_GET['property_type'];
-
-        // Get all properties
-        $properties = $propertyModel->getPropertiesWithInfo($tenantId, 1, 10000, $filters);
-
-        // Generate HTML
-        $html = $this->exportService->generatePropertiesReportHTML($properties);
-
-        // Export to PDF
-        $filename = 'properties_report_' . date('Y-m-d') . '.pdf';
-        $this->exportService->exportToPDF($html, $filename, 'landscape');
+        $this->printable('properties', 'Properties Report', 'landscape');
     }
 
-    /**
-     * Export deals to CSV
-     */
+    /** Export deals to CSV */
     public function dealsCSV() {
-        $this->requireLogin();
+        $this->csv('deals');
+    }
 
-        $tenantId = $this->getTenantId();
-        $dealModel = $this->model('Deal');
-
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['stage'])) $filters['stage'] = $_GET['stage'];
-        if (!empty($_GET['search'])) $filters['search'] = $_GET['search'];
-
-        // Get all deals
-        $deals = $dealModel->getDealsWithInfo($tenantId, 1, 10000, $filters);
-
-        // Export to CSV
-        $filename = 'deals_' . date('Y-m-d_His') . '.csv';
-        $this->exportService->exportDealsToCSV($deals, $filename);
+    /** Export tasks to CSV */
+    public function tasksCSV() {
+        $this->csv('tasks');
     }
 
     /**
-     * Export tasks to CSV
+     * Check permissions for exporting a module
+     * @param string $module
      */
-    public function tasksCSV() {
+    private function authorize($module) {
         $this->requireLogin();
+        if ($module === 'leads') {
+            $this->requirePermission('leads.export');
+        } else {
+            $this->requirePermission($module . '.view');
+            $this->requirePermission('reports.export');
+        }
+        if (!$this->getTenantId()) {
+            $this->setFlash('error', 'Exports are only available inside a tenant account.');
+            $this->redirect('dashboard/index');
+        }
+    }
 
-        $tenantId = $this->getTenantId();
-        $taskModel = $this->model('Task');
+    /**
+     * @param string $module
+     */
+    private function csv($module) {
+        $this->authorize($module);
+        $tenantId = (int)$this->getTenantId();
 
-        // Get filters from request
-        $filters = array();
-        if (!empty($_GET['status'])) $filters['status'] = $_GET['status'];
-        if (!empty($_GET['assigned_to'])) $filters['assigned_to'] = $_GET['assigned_to'];
+        $rows = $this->exportService->fetchRows($module, $tenantId, $_GET);
+        logActivity($this->getUserId(), $tenantId, 'exported_csv', $module, 0);
 
-        // Get all tasks
-        $tasks = $taskModel->getTasksWithInfo($tenantId, 1, 10000, $filters);
-
-        // Prepare data
-        $headers = array(
-            'id' => 'ID',
-            'title' => 'Title',
-            'description' => 'Description',
-            'assigned_to_name' => 'Assigned To',
-            'due_date' => 'Due Date',
-            'priority' => 'Priority',
-            'status' => 'Status',
-            'created_at' => 'Created Date'
+        $this->exportService->exportToCSV(
+            $rows,
+            ExportService::columns($module),
+            $module . '_' . date('Y-m-d_His') . '.csv'
         );
+    }
 
-        $filename = 'tasks_' . date('Y-m-d_His') . '.csv';
-        $this->exportService->exportToCSV($tasks, $headers, $filename);
+    /**
+     * @param string $module
+     * @param string $title
+     * @param string $orientation
+     */
+    private function printable($module, $title, $orientation) {
+        $this->authorize($module);
+        $tenantId = (int)$this->getTenantId();
+
+        $rows = $this->exportService->fetchRows($module, $tenantId, $_GET);
+        logActivity($this->getUserId(), $tenantId, 'exported_print', $module, 0);
+
+        $headers = ExportService::columns($module);
+        // Keep printable reports readable: drop long free-text columns
+        unset($headers['description'], $headers['tags'], $headers['address']);
+
+        foreach ($rows as &$row) {
+            foreach (array('created_at', 'due_date', 'completed_at') as $dateKey) {
+                if (!empty($row[$dateKey])) {
+                    $row[$dateKey] = date('M j, Y', strtotime($row[$dateKey]));
+                }
+            }
+            foreach (array('price', 'budget_min', 'budget_max', 'deal_value', 'commission') as $moneyKey) {
+                if (isset($row[$moneyKey]) && $row[$moneyKey] !== null && $row[$moneyKey] !== '') {
+                    $row[$moneyKey] = '$' . number_format((float)$row[$moneyKey], 0);
+                }
+            }
+            foreach (array('status', 'interest_type', 'property_type', 'listing_type') as $labelKey) {
+                if (!empty($row[$labelKey])) {
+                    $row[$labelKey] = ucwords(str_replace('_', ' ', $row[$labelKey]));
+                }
+            }
+        }
+        unset($row);
+
+        $this->exportService->renderPrintable(
+            $title,
+            $headers,
+            $rows,
+            array('Filters' => ExportService::describeFilters($_GET, $module)),
+            $orientation
+        );
     }
 }

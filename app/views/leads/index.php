@@ -36,7 +36,8 @@ $sortOptions = array(
     'l.status' => 'Status',
     'l.budget_min' => 'Budget'
 );
-$exportQuery = http_build_query(array_intersect_key($filters, array_flip(array('status', 'assigned_to', 'search'))));
+// Export with every active filter (ExportService whitelists the keys it understands)
+$exportQuery = http_build_query(array_diff_key($filters, array_flip(array('sort', 'direction'))));
 ?>
 
 <div class="page-header">
@@ -44,7 +45,7 @@ $exportQuery = http_build_query(array_intersect_key($filters, array_flip(array('
     <div class="header-actions">
         <?php if (can('leads.export')): ?>
             <a href="<?php echo e(url('export/leadsCSV') . ($exportQuery !== '' ? '?' . $exportQuery : '')); ?>" class="btn btn-secondary">Export CSV</a>
-            <a href="<?php echo e(url('export/leadsPDF') . ($exportQuery !== '' ? '?' . $exportQuery : '')); ?>" class="btn btn-secondary">Export PDF</a>
+            <a href="<?php echo e(url('export/leadsPDF') . ($exportQuery !== '' ? '?' . $exportQuery : '')); ?>" class="btn btn-secondary">Print / Save as PDF</a>
         <?php endif; ?>
         <?php if (can('leads.create')): ?>
             <a href="<?php echo e(url('leads/create')); ?>" class="btn btn-primary">Create Lead</a>
@@ -71,7 +72,7 @@ require APP_PATH . '/views/partials/bulk_operations.php';
 <table class="table">
     <thead>
         <tr>
-            <th><input type="checkbox" class="bulk-checkbox-header" onchange="toggleSelectAll(this)"></th>
+            <th><input type="checkbox" class="bulk-checkbox-header"></th>
             <th>Name</th>
             <th>Score</th>
             <th>Email</th>

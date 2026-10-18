@@ -3,7 +3,11 @@
 
 /**
  * SplashEstate CRM - Bulk Operations Controller
- * Handles bulk actions on multiple records
+ * JSON endpoints used by the bulk-actions toolbar (views/partials/bulk_operations.php).
+ *
+ * Request body: JSON (or form fields) with entity_type, ids[] and the action's
+ * parameters. Every endpoint requires POST + CSRF token (X-CSRF-Token header or
+ * csrf_token field) and the matching RBAC permission.
  */
 
 class BulkOperationsController extends Controller {
@@ -16,303 +20,174 @@ class BulkOperationsController extends Controller {
     }
 
     /**
-     * Bulk delete records
+     * Bulk delete records ({module}.delete)
      */
     public function delete() {
-        $this->requireLogin();
-
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->jsonResponse(array('error' => 'Invalid request method'), 405);
-            return;
-        }
-
-        $tenantId = $this->getTenantId();
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        if (empty($input['ids']) || empty($input['entity_type'])) {
-            $this->jsonResponse(array('error' => 'Missing required parameters'), 400);
-            return;
-        }
-
-        $table = $this->getTableName($input['entity_type']);
-        if (!$table) {
-            $this->jsonResponse(array('error' => 'Invalid entity type'), 400);
-            return;
-        }
-
-        $result = $this->bulkService->bulkDelete($table, $input['ids'], $tenantId);
-
-        if ($result['success']) {
-            $this->jsonResponse($result);
-        } else {
-            $this->jsonResponse($result, 500);
-        }
+        list($entityType, $ids) = $this->begin('delete');
+        $this->respond($this->bulkService->bulkDelete($entityType, $ids, $this->getTenantId(), $this->getUserId()));
     }
 
     /**
-     * Bulk update status
+     * Bulk status / deal stage change ({module}.edit)
      */
     public function updateStatus() {
-        $this->requireLogin();
-
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->jsonResponse(array('error' => 'Invalid request method'), 405);
-            return;
+        list($entityType, $ids, $input) = $this->begin('edit');
+        $status = isset($input['status']) && is_string($input['status']) ? trim($input['status']) : '';
+        if ($status === '') {
+            $this->fail('Please choose a status', 422);
         }
-
-        $tenantId = $this->getTenantId();
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        if (empty($input['ids']) || empty($input['entity_type']) || !isset($input['status'])) {
-            $this->jsonResponse(array('error' => 'Missing required parameters'), 400);
-            return;
-        }
-
-        $table = $this->getTableName($input['entity_type']);
-        if (!$table) {
-            $this->jsonResponse(array('error' => 'Invalid entity type'), 400);
-            return;
-        }
-
-        $result = $this->bulkService->bulkUpdate($table, $input['ids'], 'status', $input['status'], $tenantId);
-
-        if ($result['success']) {
-            // Log activity
-            foreach ($input['ids'] as $id) {
-                logActivity($tenantId, $_SESSION['user_id'], 'bulk_status_update', $input['entity_type'], $id);
-            }
-
-            $this->jsonResponse($result);
-        } else {
-            $this->jsonResponse($result, 500);
-        }
+        $this->respond($this->bulkService->bulkUpdateStatus($entityType, $ids, $status, $this->getTenantId(), $this->getUserId()));
     }
 
     /**
-     * Bulk assign to agent
+     * Bulk assign to an agent of the same tenant ({module}.edit)
      */
     public function assign() {
-        $this->requireLogin();
-
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->jsonResponse(array('error' => 'Invalid request method'), 405);
-            return;
+        list($entityType, $ids, $input) = $this->begin('edit');
+        $assigneeId = isset($input['user_id']) && is_scalar($input['user_id']) ? (int)$input['user_id'] : 0;
+        if ($assigneeId <= 0 || !$this->bulkService->findTenantUser($assigneeId, $this->getTenantId())) {
+            $this->fail('Please choose a valid, active user from your organization', 422);
         }
-
-        $tenantId = $this->getTenantId();
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        if (empty($input['ids']) || empty($input['entity_type']) || empty($input['user_id'])) {
-            $this->jsonResponse(array('error' => 'Missing required parameters'), 400);
-            return;
-        }
-
-        $table = $this->getTableName($input['entity_type']);
-        if (!$table) {
-            $this->jsonResponse(array('error' => 'Invalid entity type'), 400);
-            return;
-        }
-
-        // Verify user belongs to tenant
-        $userModel = $this->model('User');
-        $user = $userModel->getById($input['user_id'], $tenantId);
-
-        if (!$user) {
-            $this->jsonResponse(array('error' => 'Invalid user'), 403);
-            return;
-        }
-
-        $result = $this->bulkService->bulkAssign($table, $input['ids'], $input['user_id'], $tenantId);
-
-        if ($result['success']) {
-            $this->jsonResponse($result);
-        } else {
-            $this->jsonResponse($result, 500);
-        }
+        $this->respond($this->bulkService->bulkAssign($entityType, $ids, $assigneeId, $this->getTenantId(), $this->getUserId()));
     }
 
     /**
-     * Bulk email
+     * Bulk email leads/clients ({module}.edit). Capped per request and rate-limited per hour.
      */
     public function email() {
-        $this->requireLogin();
-
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->jsonResponse(array('error' => 'Invalid request method'), 405);
-            return;
+        list($entityType, $ids, $input) = $this->begin('edit');
+        $subject = isset($input['subject']) && is_string($input['subject']) ? trim($input['subject']) : '';
+        $message = isset($input['message']) && is_string($input['message']) ? trim($input['message']) : '';
+        if ($subject === '' || $message === '') {
+            $this->fail('Subject and message are required', 422);
         }
-
-        $tenantId = $this->getTenantId();
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        if (empty($input['ids']) || empty($input['subject']) || empty($input['message'])) {
-            $this->jsonResponse(array('error' => 'Missing required parameters'), 400);
-            return;
+        if (strlen($subject) > 200 || strlen($message) > 20000) {
+            $this->fail('Subject or message is too long', 422);
         }
-
-        $entityType = !empty($input['entity_type']) ? $input['entity_type'] : 'leads';
-
-        $result = $this->bulkService->bulkEmail(
-            $input['ids'],
-            $input['subject'],
-            $input['message'],
-            $entityType,
-            $tenantId
-        );
-
-        if ($result['success']) {
-            $this->jsonResponse($result);
-        } else {
-            $this->jsonResponse($result, 500);
-        }
+        $this->respond($this->bulkService->bulkEmail($entityType, $ids, $subject, $message, $this->getTenantId(), $this->getUserId()));
     }
 
     /**
-     * Bulk convert leads to clients
+     * Bulk convert leads to clients (leads.edit + clients.create)
      */
     public function convertLeads() {
-        $this->requireLogin();
-
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->jsonResponse(array('error' => 'Invalid request method'), 405);
-            return;
+        $input = $this->input();
+        $input['entity_type'] = 'leads';
+        list(, $ids) = $this->begin('edit', $input);
+        if (!can('clients.create')) {
+            $this->fail('Permission denied', 403);
         }
-
-        $tenantId = $this->getTenantId();
-        $input = json_decode(file_get_contents('php://input'), true);
-
-        if (empty($input['ids'])) {
-            $this->jsonResponse(array('error' => 'No lead IDs provided'), 400);
-            return;
-        }
-
-        $result = $this->bulkService->bulkConvertLeads($input['ids'], $tenantId);
-
-        if ($result['success']) {
-            $this->jsonResponse($result);
-        } else {
-            $this->jsonResponse($result, 500);
-        }
+        $this->respond($this->bulkService->bulkConvertLeads($ids, $this->getTenantId(), $this->getUserId()));
     }
 
     /**
-     * Bulk export selected records
+     * Export the selected records as CSV (regular form POST, not AJAX).
+     * leads -> leads.export; other modules -> {module}.view + reports.export
      */
     public function export() {
         $this->requireLogin();
+        $this->requirePostWithCsrf('dashboard/index');
 
-        $tenantId = $this->getTenantId();
-
-        if (empty($_POST['ids']) || empty($_POST['entity_type'])) {
-            $this->setFlash('error', 'Missing required parameters');
+        $entityType = isset($_POST['entity_type']) && is_string($_POST['entity_type']) ? $_POST['entity_type'] : '';
+        $cfg = BulkOperationService::entityConfig($entityType);
+        if (!$cfg) {
+            $this->setFlash('error', 'Invalid record type');
             $this->redirect('dashboard/index');
-            return;
         }
-
-        $ids = is_array($_POST['ids']) ? $_POST['ids'] : explode(',', $_POST['ids']);
-        $table = $this->getTableName($_POST['entity_type']);
-
-        if (!$table) {
-            $this->setFlash('error', 'Invalid entity type');
-            $this->redirect('dashboard/index');
-            return;
-        }
-
-        $result = $this->bulkService->bulkExportData($table, $ids, $tenantId);
-
-        if ($result['success']) {
-            require_once APP_PATH . '/helpers/ExportService.php';
-            $exportService = new ExportService();
-
-            // Determine headers based on entity type
-            $headers = $this->getExportHeaders($_POST['entity_type']);
-
-            $filename = $_POST['entity_type'] . '_bulk_export_' . date('Y-m-d_His') . '.csv';
-            $exportService->exportToCSV($result['data'], $headers, $filename);
+        if ($entityType === 'leads') {
+            $this->requirePermission('leads.export');
         } else {
-            $this->setFlash('error', 'Export failed');
-            $this->redirect('dashboard/index');
+            $this->requirePermission($cfg['perm'] . '.view');
+            $this->requirePermission('reports.export');
         }
-    }
 
-    /**
-     * Helper: Get table name from entity type
-     */
-    private function getTableName($entityType) {
-        $mapping = array(
-            'leads' => 'leads',
-            'clients' => 'clients',
-            'properties' => 'properties',
-            'deals' => 'deals',
-            'tasks' => 'tasks'
+        $ids = BulkOperationService::normalizeIds(isset($_POST['ids']) ? $_POST['ids'] : array());
+        if (empty($ids)) {
+            $this->setFlash('error', $ids === false ? 'Too many records selected' : 'No records selected');
+            $this->redirect($entityType . '/index');
+        }
+
+        $tenantId = (int)$this->getTenantId();
+        require_once APP_PATH . '/helpers/ExportService.php';
+        $exportService = new ExportService();
+        $rows = $exportService->fetchRows($entityType, $tenantId, array(), $ids);
+        logActivity($this->getUserId(), $tenantId, 'exported_csv', $cfg['singular'], 0);
+
+        $exportService->exportToCSV(
+            $rows,
+            ExportService::columns($entityType),
+            $entityType . '_selected_' . date('Y-m-d_His') . '.csv'
         );
-
-        return isset($mapping[$entityType]) ? $mapping[$entityType] : null;
     }
 
     /**
-     * Helper: Get export headers for entity type
+     * Common checks for the JSON endpoints: login, POST + CSRF, tenant,
+     * entity type, permission and id list.
+     * @param string $action Permission action (delete|edit)
+     * @param array|null $input Pre-parsed input
+     * @return array array($entityType, $ids, $input)
      */
-    private function getExportHeaders($entityType) {
-        switch ($entityType) {
-            case 'leads':
-                return array(
-                    'id' => 'ID',
-                    'first_name' => 'First Name',
-                    'last_name' => 'Last Name',
-                    'email' => 'Email',
-                    'phone' => 'Phone',
-                    'status' => 'Status',
-                    'source' => 'Source',
-                    'created_at' => 'Created'
-                );
-
-            case 'clients':
-                return array(
-                    'id' => 'ID',
-                    'first_name' => 'First Name',
-                    'last_name' => 'Last Name',
-                    'email' => 'Email',
-                    'phone' => 'Phone',
-                    'client_type' => 'Type',
-                    'status' => 'Status',
-                    'created_at' => 'Created'
-                );
-
-            case 'properties':
-                return array(
-                    'id' => 'ID',
-                    'title' => 'Title',
-                    'property_type' => 'Type',
-                    'price' => 'Price',
-                    'address' => 'Address',
-                    'city' => 'City',
-                    'status' => 'Status',
-                    'created_at' => 'Created'
-                );
-
-            case 'deals':
-                return array(
-                    'id' => 'ID',
-                    'title' => 'Title',
-                    'deal_value' => 'Value',
-                    'stage' => 'Stage',
-                    'probability' => 'Probability',
-                    'created_at' => 'Created'
-                );
-
-            case 'tasks':
-                return array(
-                    'id' => 'ID',
-                    'title' => 'Title',
-                    'status' => 'Status',
-                    'priority' => 'Priority',
-                    'due_date' => 'Due Date',
-                    'created_at' => 'Created'
-                );
-
-            default:
-                return array('id' => 'ID');
+    private function begin($action, $input = null) {
+        if (!$this->isLoggedIn()) {
+            $this->fail('Authentication required', 401);
         }
+        $this->requirePostWithCsrf('dashboard/index');
+        if (!$this->getTenantId()) {
+            $this->fail('Bulk operations are only available inside a tenant account', 403);
+        }
+
+        if ($input === null) {
+            $input = $this->input();
+        }
+        $entityType = isset($input['entity_type']) && is_string($input['entity_type']) ? $input['entity_type'] : '';
+        $cfg = BulkOperationService::entityConfig($entityType);
+        if (!$cfg) {
+            $this->fail('Invalid record type', 400);
+        }
+        if (!can($cfg['perm'] . '.' . $action)) {
+            $this->fail('Permission denied', 403);
+        }
+
+        $ids = BulkOperationService::normalizeIds(isset($input['ids']) ? $input['ids'] : array());
+        if ($ids === false) {
+            $this->fail('You can process at most ' . BulkOperationService::MAX_IDS . ' records at a time', 422);
+        }
+        if (empty($ids)) {
+            $this->fail('No records selected', 422);
+        }
+
+        return array($entityType, $ids, $input);
+    }
+
+    /**
+     * Request input from a JSON body or form fields
+     * @return array
+     */
+    private function input() {
+        $contentType = isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : '';
+        if (stripos($contentType, 'application/json') !== false) {
+            $decoded = json_decode(file_get_contents('php://input'), true);
+            return is_array($decoded) ? $decoded : array();
+        }
+        return $_POST;
+    }
+
+    /**
+     * @param array $result Service result
+     */
+    private function respond($result) {
+        if (empty($result['success'])) {
+            $code = !empty($result['rate_limited']) ? 429 : 422;
+            $this->jsonResponse(array('success' => false, 'error' => $result['error'], 'message' => $result['error']), $code);
+        }
+        $this->jsonResponse($result);
+    }
+
+    /**
+     * @param string $message
+     * @param int $code
+     */
+    private function fail($message, $code) {
+        $this->jsonResponse(array('success' => false, 'error' => $message, 'message' => $message), $code);
     }
 }

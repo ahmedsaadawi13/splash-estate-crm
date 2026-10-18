@@ -1,372 +1,250 @@
 <?php
 // FILE: /app/views/reports/index.php
-require_once '../app/views/layouts/header.php';
+// Variables: $overview (ReportService::getOverview), $startDate, $endDate, $canExport
+require APP_PATH . '/views/reports/_header.php';
+
+$kpis = $overview['kpis'];
+$funnel = $overview['funnel'];
+$pipeline = $overview['pipeline'];
+$revenue = $overview['revenue'];
+$grades = $overview['grades'];
 ?>
 
-<div class="page-header">
-    <h1>Reports & Analytics</h1>
-    <div class="header-actions">
-        <form method="GET" action="<?php echo BASE_URL; ?>/reports/index" class="date-filter-form">
-            <label>From:</label>
-            <input type="date" name="start_date" value="<?php echo $startDate; ?>">
-            <label>To:</label>
-            <input type="date" name="end_date" value="<?php echo $endDate; ?>">
-            <button type="submit" class="btn btn-primary">Update</button>
-        </form>
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>New Leads</h3>
+        <div class="stat-number"><?php echo (int)$kpis['new_leads']; ?></div>
+        <div class="stat-label"><?php echo (int)$kpis['leads_won']; ?> won &middot; <?php echo e(number_format($kpis['conversion_rate'], 1)); ?>% conversion</div>
+    </div>
+    <div class="stat-card">
+        <h3>Revenue (won deals)</h3>
+        <div class="stat-number"><?php echo e(View::formatCurrency($kpis['revenue'])); ?></div>
+        <div class="stat-label"><?php echo (int)$kpis['deals_won']; ?> deal(s) &middot; <?php echo e(View::formatCurrency($kpis['commission'])); ?> commission</div>
+    </div>
+    <div class="stat-card">
+        <h3>Open Pipeline</h3>
+        <div class="stat-number"><?php echo e(View::formatCurrency($kpis['open_pipeline'])); ?></div>
+        <div class="stat-label"><?php echo e(View::formatCurrency($kpis['weighted_pipeline'])); ?> weighted by probability</div>
+    </div>
+    <div class="stat-card">
+        <h3>Tasks Completed</h3>
+        <div class="stat-number"><?php echo (int)$kpis['tasks_completed']; ?></div>
+        <div class="stat-label"><?php echo (int)$kpis['tasks_overdue']; ?> overdue</div>
     </div>
 </div>
 
-<div class="reports-grid">
-    <!-- Lead Conversion Funnel -->
-    <div class="report-card">
+<div class="grid-2 mt-2">
+    <div class="card">
         <div class="card-header">
-            <h3>Lead Conversion Funnel</h3>
-            <a href="<?php echo BASE_URL; ?>/reports/export/lead-funnel?start_date=<?php echo $startDate; ?>&end_date=<?php echo $endDate; ?>" class="btn btn-sm">Export</a>
+            <h3>Sales Funnel</h3>
+            <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('funnel')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
         </div>
         <div class="card-body">
-            <canvas id="leadFunnelChart"></canvas>
+            <?php if ($funnel['total'] === 0): ?>
+                <div class="empty-state"><p>No leads were created in this period.</p></div>
+            <?php else: ?>
+                <div class="report-chart"><canvas id="funnelChart" aria-label="Leads by status" role="img"></canvas></div>
+                <p class="small text-muted mt-1">Win rate (won / closed): <strong><?php echo e(number_format($funnel['win_rate'], 1)); ?>%</strong> &middot; open leads: <?php echo (int)$funnel['open']; ?></p>
+            <?php endif; ?>
         </div>
-        <div class="card-footer">
-            <a href="<?php echo BASE_URL; ?>/reports/leads" class="btn btn-link">View Details →</a>
-        </div>
+        <div class="card-footer text-right"><a href="<?php echo e(url('reports/leads')); ?>?<?php echo e($reportQuery); ?>" class="btn btn-link btn-sm">Lead analytics &rarr;</a></div>
     </div>
 
-    <!-- Lead Sources -->
-    <div class="report-card">
+    <div class="card">
+        <div class="card-header">
+            <h3>Deal Pipeline by Stage</h3>
+            <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('pipeline')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
+        </div>
+        <div class="card-body">
+            <?php if ($pipeline['totals']['deal_count'] === 0): ?>
+                <div class="empty-state"><p>No deals were created in this period.</p></div>
+            <?php else: ?>
+                <div class="report-chart"><canvas id="pipelineChart" aria-label="Deal value by stage" role="img"></canvas></div>
+            <?php endif; ?>
+        </div>
+        <div class="card-footer text-right"><a href="<?php echo e(url('reports/revenue')); ?>?<?php echo e($reportQuery); ?>" class="btn btn-link btn-sm">Revenue &amp; pipeline &rarr;</a></div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3>Revenue by Month</h3>
+        <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('revenue')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
+    </div>
+    <div class="card-body">
+        <?php if ($revenue['totals']['deal_count'] === 0): ?>
+            <div class="empty-state"><p>No deals were won in this period.</p></div>
+        <?php else: ?>
+            <div class="report-chart is-short"><canvas id="revenueChart" aria-label="Revenue by month" role="img"></canvas></div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3>Top Agents</h3>
+        <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('agents')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
+    </div>
+    <div class="card-body table-responsive">
+        <?php if (empty($overview['agents'])): ?>
+            <div class="empty-state"><p>No agents found.</p></div>
+        <?php else: ?>
+        <table class="table report-table">
+            <thead>
+                <tr>
+                    <th>#</th><th>Agent</th><th class="num">Leads</th><th class="num">Won</th>
+                    <th class="num">Deals Won</th><th class="num">Revenue</th><th class="num">Tasks Done</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($overview['agents'] as $agent): ?>
+                <tr>
+                    <td><?php echo (int)$agent['rank']; ?></td>
+                    <td><?php echo e($agent['agent_name']); ?></td>
+                    <td class="num"><?php echo (int)$agent['leads']; ?></td>
+                    <td class="num"><?php echo (int)$agent['leads_won']; ?></td>
+                    <td class="num"><?php echo (int)$agent['deals_won']; ?></td>
+                    <td class="num"><?php echo e(View::formatCurrency($agent['revenue'])); ?></td>
+                    <td class="num"><?php echo (int)$agent['tasks_completed']; ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php endif; ?>
+    </div>
+    <div class="card-footer text-right"><a href="<?php echo e(url('reports/agents')); ?>?<?php echo e($reportQuery); ?>" class="btn btn-link btn-sm">Full leaderboard &rarr;</a></div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
         <div class="card-header">
             <h3>Lead Sources</h3>
+            <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('sources')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
         </div>
-        <div class="card-body">
-            <canvas id="leadSourcesChart"></canvas>
-        </div>
-    </div>
-
-    <!-- Revenue Trends -->
-    <div class="report-card full-width">
-        <div class="card-header">
-            <h3>Revenue Trends (Last 6 Months)</h3>
-            <a href="<?php echo BASE_URL; ?>/reports/export/revenue-trends" class="btn btn-sm">Export</a>
-        </div>
-        <div class="card-body">
-            <canvas id="revenueTrendsChart"></canvas>
-        </div>
-        <div class="card-footer">
-            <a href="<?php echo BASE_URL; ?>/reports/revenue" class="btn btn-link">View Details →</a>
-        </div>
-    </div>
-
-    <!-- Deals Pipeline -->
-    <div class="report-card">
-        <div class="card-header">
-            <h3>Deals Pipeline</h3>
-        </div>
-        <div class="card-body">
-            <canvas id="dealsPipelineChart"></canvas>
-        </div>
-    </div>
-
-    <!-- Property Types -->
-    <div class="report-card">
-        <div class="card-header">
-            <h3>Property Type Distribution</h3>
-        </div>
-        <div class="card-body">
-            <canvas id="propertyTypesChart"></canvas>
-        </div>
-        <div class="card-footer">
-            <a href="<?php echo BASE_URL; ?>/reports/properties" class="btn btn-link">View Details →</a>
-        </div>
-    </div>
-
-    <!-- Agent Performance -->
-    <div class="report-card full-width">
-        <div class="card-header">
-            <h3>Agent Performance</h3>
-            <a href="<?php echo BASE_URL; ?>/reports/export/agent-performance?start_date=<?php echo $startDate; ?>&end_date=<?php echo $endDate; ?>" class="btn btn-sm">Export</a>
-        </div>
-        <div class="card-body">
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Agent</th>
-                        <th>Total Leads</th>
-                        <th>Won Leads</th>
-                        <th>Total Deals</th>
-                        <th>Won Deals</th>
-                        <th>Revenue</th>
-                        <th>Commission</th>
-                        <th>Conversion Rate</th>
-                    </tr>
-                </thead>
+        <div class="card-body table-responsive">
+            <?php if (empty($overview['sources'])): ?>
+                <div class="empty-state"><p>No leads in this period.</p></div>
+            <?php else: ?>
+            <table class="table report-table">
+                <thead><tr><th>Source</th><th class="num">Leads</th><th class="num">Won</th><th class="num">Conversion</th></tr></thead>
                 <tbody>
-                    <?php foreach ($dashboardData['agents'] as $agent): ?>
+                    <?php foreach ($overview['sources'] as $source): ?>
                     <tr>
-                        <td><strong><?php echo View::escape($agent['agent_name']); ?></strong></td>
-                        <td><?php echo $agent['total_leads']; ?></td>
-                        <td><?php echo $agent['won_leads']; ?></td>
-                        <td><?php echo $agent['total_deals']; ?></td>
-                        <td><?php echo $agent['won_deals']; ?></td>
-                        <td><?php echo View::formatCurrency($agent['total_revenue']); ?></td>
-                        <td><?php echo View::formatCurrency($agent['total_commission']); ?></td>
-                        <td>
-                            <?php
-                            $conversionRate = $agent['total_leads'] > 0 ? ($agent['won_leads'] / $agent['total_leads'] * 100) : 0;
-                            echo number_format($conversionRate, 1) . '%';
-                            ?>
-                        </td>
+                        <td><?php echo e($source['source']); ?></td>
+                        <td class="num"><?php echo (int)$source['leads']; ?></td>
+                        <td class="num"><?php echo (int)$source['won']; ?></td>
+                        <td class="num"><?php echo e(number_format($source['conversion_rate'], 1)); ?>%</td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php endif; ?>
         </div>
-        <div class="card-footer">
-            <a href="<?php echo BASE_URL; ?>/reports/agents" class="btn btn-link">View Details →</a>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>Lead Grades</h3>
+            <?php if ($canExport): ?><a href="<?php echo e($reportExportUrl('grades')); ?>" class="btn btn-sm btn-outline">Export CSV</a><?php endif; ?>
+        </div>
+        <div class="card-body table-responsive">
+            <?php if ($grades['total'] === 0): ?>
+                <div class="empty-state"><p>No leads in this period.</p></div>
+            <?php else: ?>
+            <table class="table report-table">
+                <thead><tr><th>Grade</th><th class="num">Leads</th><th class="num">Share</th><th class="num">Avg Score</th></tr></thead>
+                <tbody>
+                    <?php foreach ($grades['grades'] as $grade): ?>
+                    <tr>
+                        <td><span class="grade grade-<?php echo e($grade['grade']); ?>"><?php echo e($grade['grade']); ?></span></td>
+                        <td class="num"><?php echo (int)$grade['leads']; ?></td>
+                        <td class="num"><?php echo e(number_format($grade['share'], 1)); ?>%</td>
+                        <td class="num"><?php echo $grade['avg_score'] === null ? '&ndash;' : e(number_format($grade['avg_score'], 1)); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <tr>
+                        <td class="text-muted">Not scored</td>
+                        <td class="num"><?php echo (int)$grades['unscored']; ?></td>
+                        <td class="num"><?php echo e(number_format($grades['total'] > 0 ? $grades['unscored'] / $grades['total'] * 100 : 0, 1)); ?>%</td>
+                        <td class="num">&ndash;</td>
+                    </tr>
+                </tbody>
+            </table>
+            <?php endif; ?>
         </div>
     </div>
 </div>
 
-<style>
-.reports-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    gap: 20px;
-    margin-top: 20px;
-}
-
-.report-card {
-    background: white;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.report-card.full-width {
-    grid-column: 1 / -1;
-}
-
-.card-header {
-    background: #f8f9fa;
-    padding: 15px 20px;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.card-header h3 {
-    margin: 0;
-    font-size: 18px;
-    color: #2c3e50;
-}
-
-.card-body {
-    padding: 20px;
-}
-
-.card-footer {
-    padding: 10px 20px;
-    background: #f8f9fa;
-    border-top: 1px solid #ddd;
-    text-align: right;
-}
-
-.date-filter-form {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-}
-
-.date-filter-form label {
-    font-weight: 600;
-    margin: 0;
-}
-
-.date-filter-form input[type="date"] {
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-}
-
-@media (max-width: 768px) {
-    .reports-grid {
-        grid-template-columns: 1fr;
-    }
-}
-</style>
-
-<!-- Include Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
 <script>
-// Dashboard data from PHP
-const dashboardData = <?php echo json_encode($dashboardData); ?>;
+(function () {
+    var funnel = <?php echo $reportJson($funnel['stages']); ?>;
+    var pipeline = <?php echo $reportJson($pipeline['stages']); ?>;
+    var revenue = <?php echo $reportJson($revenue['months']); ?>;
 
-// Chart color palettes
-const colorPalette = [
-    '#3498db', '#2ecc71', '#f39c12', '#e74c3c', '#9b59b6',
-    '#1abc9c', '#34495e', '#16a085', '#27ae60', '#2980b9'
-];
-
-// Lead Conversion Funnel Chart
-const leadFunnelCtx = document.getElementById('leadFunnelChart').getContext('2d');
-new Chart(leadFunnelCtx, {
-    type: 'bar',
-    data: {
-        labels: dashboardData.leads.map(item => item.status.charAt(0).toUpperCase() + item.status.slice(1)),
-        datasets: [{
-            label: 'Number of Leads',
-            data: dashboardData.leads.map(item => item.count),
-            backgroundColor: colorPalette.slice(0, dashboardData.leads.length),
-            borderWidth: 0
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                display: false
-            }
+    reportChart('funnelChart', {
+        type: 'bar',
+        data: {
+            labels: funnel.map(function (s) { return s.label; }),
+            datasets: [{
+                label: 'Leads',
+                data: funnel.map(function (s) { return s.count; }),
+                backgroundColor: funnel.map(function (s) { return s.status === 'lost' ? REPORT_COLORS.muted : REPORT_COLORS.primary; }),
+                borderRadius: 4, maxBarThickness: 28
+            }]
         },
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: {
-                    stepSize: 1
-                }
-            }
+        options: {
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+            scales: { x: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: REPORT_COLORS.grid } }, y: { grid: { display: false } } }
         }
-    }
-});
+    });
 
-// Lead Sources Pie Chart
-const leadSourcesCtx = document.getElementById('leadSourcesChart').getContext('2d');
-new Chart(leadSourcesCtx, {
-    type: 'pie',
-    data: {
-        labels: dashboardData.sources.map(item => item.source),
-        datasets: [{
-            data: dashboardData.sources.map(item => item.count),
-            backgroundColor: colorPalette.slice(0, dashboardData.sources.length)
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                position: 'bottom'
-            }
+    var openStages = pipeline.filter(function (s) { return s.stage !== 'closed_lost'; });
+    reportChart('pipelineChart', {
+        type: 'bar',
+        data: {
+            labels: openStages.map(function (s) { return s.label; }),
+            datasets: [{
+                label: 'Total value',
+                data: openStages.map(function (s) { return s.total_value; }),
+                backgroundColor: REPORT_COLORS.primary, borderRadius: 4, maxBarThickness: 28
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: function (ctx) {
+                    var s = openStages[ctx.dataIndex];
+                    return reportMoney(s.total_value) + ' (' + s.deal_count + ' deals, weighted ' + reportMoney(s.weighted_value) + ')';
+                } } }
+            },
+            scales: { x: { beginAtZero: true, ticks: { callback: reportMoney }, grid: { color: REPORT_COLORS.grid } }, y: { grid: { display: false } } }
         }
-    }
-});
+    });
 
-// Revenue Trends Line Chart
-const revenueTrendsCtx = document.getElementById('revenueTrendsChart').getContext('2d');
-new Chart(revenueTrendsCtx, {
-    type: 'line',
-    data: {
-        labels: dashboardData.revenue_trends.map(item => item.period),
-        datasets: [
-            {
+    reportChart('revenueChart', {
+        type: 'bar',
+        data: {
+            labels: revenue.map(function (m) { return m.label; }),
+            datasets: [{
                 label: 'Revenue',
-                data: dashboardData.revenue_trends.map(item => parseFloat(item.revenue)),
-                borderColor: '#3498db',
-                backgroundColor: 'rgba(52, 152, 219, 0.1)',
-                fill: true,
-                tension: 0.4
-            },
-            {
-                label: 'Commission',
-                data: dashboardData.revenue_trends.map(item => parseFloat(item.commission)),
-                borderColor: '#2ecc71',
-                backgroundColor: 'rgba(46, 204, 113, 0.1)',
-                fill: true,
-                tension: 0.4
-            }
-        ]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                position: 'top'
-            }
+                data: revenue.map(function (m) { return m.revenue; }),
+                backgroundColor: REPORT_COLORS.primary, borderRadius: 4, maxBarThickness: 40
+            }]
         },
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: {
-                    callback: function(value) {
-                        return '$' + value.toLocaleString();
-                    }
-                }
-            }
-        }
-    }
-});
-
-// Deals Pipeline Chart
-const dealsPipelineCtx = document.getElementById('dealsPipelineChart').getContext('2d');
-new Chart(dealsPipelineCtx, {
-    type: 'doughnut',
-    data: {
-        labels: dashboardData.pipeline.map(item => item.stage.replace('_', ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')),
-        datasets: [{
-            data: dashboardData.pipeline.map(item => item.count),
-            backgroundColor: colorPalette.slice(0, dashboardData.pipeline.length)
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                position: 'bottom'
-            }
-        }
-    }
-});
-
-// Property Types Chart
-const propertyTypesCtx = document.getElementById('propertyTypesChart').getContext('2d');
-new Chart(propertyTypesCtx, {
-    type: 'bar',
-    data: {
-        labels: dashboardData.properties.map(item => item.property_type.charAt(0).toUpperCase() + item.property_type.slice(1)),
-        datasets: [
-            {
-                label: 'Total',
-                data: dashboardData.properties.map(item => item.count),
-                backgroundColor: '#3498db'
+        options: {
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: function (ctx) {
+                    var m = revenue[ctx.dataIndex];
+                    return reportMoney(m.revenue) + ' from ' + m.deal_count + ' deal(s), commission ' + reportMoney(m.commission);
+                } } }
             },
-            {
-                label: 'Sold',
-                data: dashboardData.properties.map(item => item.sold_count),
-                backgroundColor: '#2ecc71'
-            }
-        ]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-            legend: {
-                position: 'top'
-            }
-        },
-        scales: {
-            y: {
-                beginAtZero: true,
-                ticks: {
-                    stepSize: 1
-                }
-            }
+            scales: { y: { beginAtZero: true, ticks: { callback: reportMoney }, grid: { color: REPORT_COLORS.grid } }, x: { grid: { display: false } } }
         }
-    }
-});
+    });
+})();
 </script>
 
-<?php require_once '../app/views/layouts/footer.php'; ?>
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

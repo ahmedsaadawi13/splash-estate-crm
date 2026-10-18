@@ -2,7 +2,14 @@
 /**
  * Lead Scoring Engine
  *
- * Calculates and manages lead scores based on configurable rules
+ * Calculates and manages lead scores based on configurable, tenant-scoped rules.
+ * A lead's score is the sum of the points of every matching active rule
+ * (rules may award negative points), clamped to 0..100, then graded
+ * A >= 80, B >= 60, C >= 40, D >= 20, otherwise F.
+ *
+ * Methods that take only a lead ID trust the caller: they are used by
+ * dispatchEvent() after the lead was loaded through a tenant-scoped query.
+ * Controllers should pass a tenant ID to testRules() to enforce isolation.
  */
 
 require_once APP_PATH . '/models/LeadScoringRule.php';
@@ -15,6 +22,9 @@ class LeadScoringEngine
     private $scoreModel;
     private $leadModel;
 
+    /** Per-instance cache of active rules by tenant (bulk recalculation) */
+    private $rulesCache = array();
+
     public function __construct()
     {
         $this->ruleModel = new LeadScoringRule();
@@ -23,7 +33,7 @@ class LeadScoringEngine
     }
 
     /**
-     * Calculate score for a lead
+     * Calculate and store the score for a lead
      *
      * @param int $leadId Lead ID
      * @param string|null $triggeredBy What triggered the calculation
@@ -31,37 +41,38 @@ class LeadScoringEngine
      */
     public function calculateScore($leadId, $triggeredBy = 'auto')
     {
-        // Get lead data
-        $lead = $this->leadModel->getById($leadId);
-
+        $lead = $this->leadModel->findById((int)$leadId);
         if (!$lead) {
             return false;
         }
 
-        $tenantId = $lead['tenant_id'];
-
-        // Get all active scoring rules for this tenant
-        $rules = $this->ruleModel->getByTenant($tenantId, 'active');
-
+        $rules = $this->getActiveRules($lead['tenant_id']);
         if (empty($rules)) {
-            // No rules defined, set score to 0
-            return $this->scoreModel->updateScore($leadId, 0, [], $triggeredBy, 'No scoring rules defined');
+            return $this->scoreModel->updateScore($lead['id'], 0, array(), $triggeredBy, 'No active scoring rules');
         }
 
-        // Calculate score
-        $totalScore = 0;
+        $result = $this->scoreLead($lead, $rules);
+
+        $reason = sprintf('Matched %d of %d rules (raw %d points)', count($result['breakdown']), count($rules), $result['raw_score']);
+        return $this->scoreModel->updateScore($lead['id'], $result['score'], $result['breakdown'], $triggeredBy, $reason);
+    }
+
+    /**
+     * Evaluate rules for a lead without saving
+     * @param array $lead Lead row
+     * @param array $rules Active rules
+     * @return array score, raw_score, breakdown (matched rules)
+     */
+    private function scoreLead($lead, $rules)
+    {
+        $raw = 0;
         $breakdown = array();
-
         foreach ($rules as $rule) {
-            // Evaluate rule against lead data
-            $matches = $this->ruleModel->evaluate($rule, $lead);
-
-            if ($matches) {
+            if ($this->ruleModel->evaluate($rule, $lead)) {
                 $points = (int)$rule['points'];
-                $totalScore += $points;
-
+                $raw += $points;
                 $breakdown[] = array(
-                    'rule_id' => $rule['id'],
+                    'rule_id' => (int)$rule['id'],
                     'rule_name' => $rule['name'],
                     'rule_type' => $rule['rule_type'],
                     'field' => $rule['field_name'],
@@ -70,15 +81,24 @@ class LeadScoringEngine
                 );
             }
         }
+        return array(
+            'score' => max(0, min(100, $raw)),
+            'raw_score' => $raw,
+            'breakdown' => $breakdown
+        );
+    }
 
-        // Ensure score is not negative
-        $totalScore = max(0, $totalScore);
-
-        // Ensure score doesn't exceed 100
-        $totalScore = min(100, $totalScore);
-
-        // Update score
-        return $this->scoreModel->updateScore($leadId, $totalScore, $breakdown, $triggeredBy, 'Score calculated');
+    /**
+     * @param int $tenantId
+     * @return array Active rules of a tenant
+     */
+    private function getActiveRules($tenantId)
+    {
+        $key = (int)$tenantId;
+        if (!isset($this->rulesCache[$key])) {
+            $this->rulesCache[$key] = $this->ruleModel->getByTenant($key, 'active');
+        }
+        return $this->rulesCache[$key];
     }
 
     /**
@@ -108,22 +128,18 @@ class LeadScoringEngine
      * Get score for a lead with details
      *
      * @param int $leadId Lead ID
-     * @return array|null Score details
+     * @return array|null Score row plus 'breakdown' (array), or null when never scored
      */
     public function getLeadScore($leadId)
     {
         $score = $this->scoreModel->getByLead($leadId);
-
-        if (!$score) {
+        if (!$score || $score['grade'] === null) {
             return null;
         }
 
-        // Decode breakdown
-        if ($score['score_breakdown']) {
-            $score['breakdown'] = json_decode($score['score_breakdown'], true);
-        } else {
-            $score['breakdown'] = array();
-        }
+        $breakdown = !empty($score['score_breakdown']) ? json_decode($score['score_breakdown'], true) : array();
+        $score['breakdown'] = is_array($breakdown) ? $breakdown : array();
+        $score['score'] = (int)$score['score'];
 
         return $score;
     }
@@ -162,25 +178,11 @@ class LeadScoringEngine
      */
     public function getQualifiedLeads($tenantId, $minScore = 60, $limit = 50)
     {
-        $sql = "SELECT ls.*, l.name, l.email, l.phone, l.source, l.status
-                FROM lead_scores ls
-                INNER JOIN leads l ON ls.lead_id = l.id
-                WHERE l.tenant_id = :tenant_id
-                AND ls.score >= :min_score
-                ORDER BY ls.score DESC, ls.last_calculated_at DESC
-                LIMIT :limit";
-
-        $stmt = $this->scoreModel->conn->prepare($sql);
-        $stmt->bindParam(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $stmt->bindParam(':min_score', $minScore, PDO::PARAM_INT);
-        $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
-        $stmt->execute();
-
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->scoreModel->getLeadsInScoreRange($tenantId, $minScore, 100, $limit);
     }
 
     /**
-     * Get leads needing attention (low scores)
+     * Get open leads needing attention (low scores)
      *
      * @param int $tenantId Tenant ID
      * @param int $maxScore Maximum score threshold
@@ -189,102 +191,62 @@ class LeadScoringEngine
      */
     public function getNurturingLeads($tenantId, $maxScore = 40, $limit = 50)
     {
-        $sql = "SELECT ls.*, l.name, l.email, l.phone, l.source, l.status
-                FROM lead_scores ls
-                INNER JOIN leads l ON ls.lead_id = l.id
-                WHERE l.tenant_id = :tenant_id
-                AND ls.score <= :max_score
-                AND l.status NOT IN ('converted', 'lost')
-                ORDER BY ls.score ASC, ls.last_calculated_at DESC
-                LIMIT :limit";
-
-        $stmt = $this->scoreModel->conn->prepare($sql);
-        $stmt->bindParam(':tenant_id', $tenantId, PDO::PARAM_INT);
-        $stmt->bindParam(':max_score', $maxScore, PDO::PARAM_INT);
-        $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
-        $stmt->execute();
-
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $this->scoreModel->getLeadsInScoreRange($tenantId, 0, $maxScore, $limit, true, true);
     }
 
     /**
      * Get scoring performance metrics
      *
      * @param int $tenantId Tenant ID
-     * @return array Performance metrics
+     * @return array statistics, distribution, rule_stats, conversion_rates
      */
     public function getPerformanceMetrics($tenantId)
     {
-        $stats = $this->scoreModel->getStatistics($tenantId);
-        $distribution = $this->scoreModel->getDistribution($tenantId);
-        $ruleStats = $this->ruleModel->getStatistics($tenantId);
-
-        // Calculate conversion rates by grade
-        $conversionRates = $this->getConversionRatesByGrade($tenantId);
-
         return array(
-            'statistics' => $stats,
-            'distribution' => $distribution,
-            'rule_stats' => $ruleStats,
-            'conversion_rates' => $conversionRates
+            'statistics' => $this->scoreModel->getStatistics($tenantId),
+            'distribution' => $this->scoreModel->getDistribution($tenantId),
+            'rule_stats' => $this->ruleModel->getStatistics($tenantId),
+            'conversion_rates' => $this->scoreModel->getConversionRatesByGrade($tenantId)
         );
-    }
-
-    /**
-     * Get conversion rates by lead grade
-     *
-     * @param int $tenantId Tenant ID
-     * @return array Conversion rates
-     */
-    private function getConversionRatesByGrade($tenantId)
-    {
-        $sql = "SELECT
-                    ls.grade,
-                    COUNT(*) as total_leads,
-                    SUM(CASE WHEN l.status = 'converted' THEN 1 ELSE 0 END) as converted_leads,
-                    ROUND(SUM(CASE WHEN l.status = 'converted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as conversion_rate
-                FROM lead_scores ls
-                INNER JOIN leads l ON ls.lead_id = l.id
-                WHERE l.tenant_id = :tenant_id
-                GROUP BY ls.grade
-                ORDER BY ls.grade ASC";
-
-        $stmt = $this->scoreModel->conn->prepare($sql);
-        $stmt->execute([':tenant_id' => $tenantId]);
-
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
      * Bulk recalculate scores for all leads in a tenant
      *
      * @param int $tenantId Tenant ID
-     * @return array Result summary
+     * @return array total, success, failed, errors
      */
     public function bulkRecalculate($tenantId)
     {
-        $leads = $this->leadModel->getAll(['tenant_id' => $tenantId]);
+        $stmt = $this->leadModel->getConnection()->prepare("SELECT id FROM leads WHERE tenant_id = :tenant_id ORDER BY id");
+        $stmt->bindValue(':tenant_id', (int)$tenantId, PDO::PARAM_INT);
+        $stmt->execute();
+        $leadIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        // Fresh rules for this run
+        unset($this->rulesCache[(int)$tenantId]);
 
         $success = 0;
         $failed = 0;
         $errors = array();
 
-        foreach ($leads as $lead) {
+        foreach ($leadIds as $leadId) {
             try {
-                if ($this->calculateScore($lead['id'], 'bulk_recalculate')) {
+                if ($this->calculateScore((int)$leadId, 'bulk_recalculate')) {
                     $success++;
                 } else {
                     $failed++;
-                    $errors[] = "Lead #{$lead['id']}: Calculation returned false";
+                    $errors[] = "Lead #{$leadId}: calculation returned false";
                 }
-            } catch (Exception $e) {
+            } catch (Throwable $e) {
                 $failed++;
-                $errors[] = "Lead #{$lead['id']}: " . $e->getMessage();
+                $errors[] = "Lead #{$leadId}: " . $e->getMessage();
+                error_log("Lead scoring failed for lead #{$leadId}: " . $e->getMessage());
             }
         }
 
         return array(
-            'total' => count($leads),
+            'total' => count($leadIds),
             'success' => $success,
             'failed' => $failed,
             'errors' => $errors
@@ -292,15 +254,17 @@ class LeadScoringEngine
     }
 
     /**
-     * Test scoring rules against a lead
+     * Test active scoring rules against a lead (nothing is saved)
      *
      * @param int $leadId Lead ID
-     * @return array Detailed rule evaluation results
+     * @param int|null $tenantId When given, the lead must belong to this tenant
+     * @return array|null lead, rules (rule, matched, points_awarded, reason), raw_score, total_score, grade
      */
-    public function testRules($leadId)
+    public function testRules($leadId, $tenantId = null)
     {
-        $lead = $this->leadModel->getById($leadId);
-
+        $lead = $tenantId !== null
+            ? $this->leadModel->getById((int)$leadId, (int)$tenantId)
+            : $this->leadModel->findById((int)$leadId);
         if (!$lead) {
             return null;
         }
@@ -308,16 +272,11 @@ class LeadScoringEngine
         $rules = $this->ruleModel->getByTenant($lead['tenant_id'], 'active');
 
         $results = array();
-        $totalScore = 0;
-
+        $raw = 0;
         foreach ($rules as $rule) {
             $matches = $this->ruleModel->evaluate($rule, $lead);
             $points = $matches ? (int)$rule['points'] : 0;
-
-            if ($matches) {
-                $totalScore += $points;
-            }
-
+            $raw += $points;
             $results[] = array(
                 'rule' => $rule,
                 'matched' => $matches,
@@ -326,11 +285,13 @@ class LeadScoringEngine
             );
         }
 
+        $total = max(0, min(100, $raw));
         return array(
             'lead' => $lead,
             'rules' => $results,
-            'total_score' => min(100, max(0, $totalScore)),
-            'grade' => $this->scoreModel->calculateGrade($totalScore)
+            'raw_score' => $raw,
+            'total_score' => $total,
+            'grade' => $this->scoreModel->calculateGrade($total)
         );
     }
 
@@ -345,15 +306,22 @@ class LeadScoringEngine
     private function getMatchReason($rule, $lead, $matched)
     {
         $field = $rule['field_name'];
-        $operator = $rule['operator'];
-        $expectedValue = $rule['field_value'];
-        $actualValue = isset($lead[$field]) ? $lead[$field] : 'null';
+        $operators = LeadScoringRule::getOperators();
+        $operator = isset($operators[$rule['operator']]) ? strtolower(preg_replace('/\s*\(.*\)$/', '', $operators[$rule['operator']])) : $rule['operator'];
+        $actual = isset($lead[$field]) && trim((string)$lead[$field]) !== '' ? '"' . $lead[$field] . '"' : '(empty)';
 
-        if ($matched) {
-            return "Field '{$field}' ({$actualValue}) {$operator} {$expectedValue}";
-        } else {
-            return "Field '{$field}' ({$actualValue}) does not match condition: {$operator} {$expectedValue}";
+        $condition = $operator;
+        if (!in_array($rule['operator'], array('is_empty', 'is_not_empty'), true)) {
+            $condition .= ' "' . (string)$rule['field_value'] . '"';
         }
+
+        if (!array_key_exists($field, $lead)) {
+            return "Lead has no field '{$field}'";
+        }
+
+        return $matched
+            ? "{$field} {$actual} {$condition}"
+            : "{$field} {$actual} does not satisfy: {$condition}";
     }
 
     /**
@@ -365,7 +333,6 @@ class LeadScoringEngine
     public function getRecommendedActions($leadId)
     {
         $score = $this->getLeadScore($leadId);
-
         if (!$score) {
             return array();
         }

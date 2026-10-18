@@ -57,6 +57,9 @@
                 <?php if (can('webhooks.manage')): ?>
                     <li><a href="<?php echo BASE_URL; ?>/webhooks/index">Webhooks</a></li>
                 <?php endif; ?>
+                <?php if (can('users.manage')): ?>
+                    <li><a href="<?php echo BASE_URL; ?>/users/index">Team</a></li>
+                <?php endif; ?>
                 <?php if (can('roles.manage')): ?>
                     <li><a href="<?php echo BASE_URL; ?>/roles/index">Roles</a></li>
                 <?php endif; ?>

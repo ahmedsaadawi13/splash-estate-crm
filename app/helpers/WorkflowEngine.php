@@ -843,7 +843,14 @@ class WorkflowEngine {
             }
         }
 
-        $dueIn = isset($config['due_in']) ? $config['due_in'] : (isset($config['due_date_offset']) ? $config['due_date_offset'] : '');
+        // 'due_date' is the key used by workflows saved with the original builder
+        $dueIn = '';
+        foreach (array('due_in', 'due_date_offset', 'due_date') as $dueKey) {
+            if (isset($config[$dueKey]) && $config[$dueKey] !== '') {
+                $dueIn = $config[$dueKey];
+                break;
+            }
+        }
         $dueDate = $this->resolveDueDate($dueIn);
 
         $priority = isset($config['priority']) && in_array($config['priority'], array('low', 'medium', 'high', 'urgent'), true) ? $config['priority'] : 'medium';

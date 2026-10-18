@@ -22,16 +22,14 @@ class Plan extends Model {
     }
 
     /**
-     * Get plan by ID
+     * Get plan by ID.
+     * (Named findPlan because Model::getById($id, $tenantId) has a
+     * different, tenant-scoped signature; plans are global.)
      * @param int $id Plan ID
-     * @return mixed Plan data or false
+     * @return array|false Plan data or false
      */
-    public function getById($id) {
-        $sql = "SELECT * FROM {$this->table} WHERE id = :id LIMIT 1";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetch();
+    public function findPlan($id) {
+        return $this->findById($id);
     }
 
     /**
@@ -82,9 +80,14 @@ class Plan extends Model {
      * @return bool Success status
      */
     public function updatePlan($id, $data) {
+        unset($data['id'], $data['updated_at']);
+        if (empty($data)) {
+            return true;
+        }
+        self::assertValidIdentifiers(array_keys($data));
         $fields = array();
         foreach (array_keys($data) as $field) {
-            $fields[] = "{$field} = :{$field}";
+            $fields[] = "`{$field}` = :{$field}";
         }
         $fieldList = implode(', ', $fields);
 

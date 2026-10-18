@@ -73,7 +73,10 @@
                     <?php $unreadCount = unreadNotificationCount(); ?>
                     <a href="<?php echo BASE_URL; ?>/notifications/index" title="Notifications">Notifications<?php if ($unreadCount > 0): ?><span class="nav-badge"><?php echo (int)$unreadCount; ?></span><?php endif; ?></a>
                     <span><?php echo View::escape(isset($_SESSION['user_name']) ? $_SESSION['user_name'] : ''); ?></span>
-                    <a href="<?php echo BASE_URL; ?>/auth/logout">Logout</a>
+                    <form method="POST" action="<?php echo BASE_URL; ?>/auth/logout" class="inline-form">
+                        <?php echo csrf_field(); ?>
+                        <button type="submit" class="btn btn-link" style="color: #fff; padding: 0;">Logout</button>
+                    </form>
                 </li>
             </ul>
         </div>

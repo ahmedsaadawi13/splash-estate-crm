@@ -1,31 +1,33 @@
 <?php
 // FILE: /app/views/auth/forgot.php
-require_once '../app/views/layouts/header.php';
+require APP_PATH . '/views/layouts/header.php';
+$messageType = isset($messageType) && in_array($messageType, array('info', 'error', 'success'), true) ? $messageType : 'info';
 ?>
 
 <div class="auth-container">
     <div class="auth-box">
         <h1>Forgot Password</h1>
+        <p class="text-muted">Enter your account email and we will send you a link to reset your password.</p>
 
         <?php if (!empty($message)): ?>
-            <div class="alert alert-info">
-                <?php echo View::escape($message); ?>
-            </div>
+            <div class="alert alert-<?php echo $messageType; ?>"><?php echo e($message); ?></div>
         <?php endif; ?>
 
-        <form method="POST" action="<?php echo BASE_URL; ?>/auth/forgot">
+        <form method="POST" action="<?php echo e(url('auth/forgot')); ?>">
+            <?php echo csrf_field(); ?>
             <div class="form-group">
                 <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" class="form-control" required>
+                <input type="email" id="email" name="email" class="form-control" autocomplete="email" required
+                       value="<?php echo e(isset($email) ? $email : ''); ?>">
             </div>
 
-            <button type="submit" class="btn btn-primary btn-block">Reset Password</button>
+            <button type="submit" class="btn btn-primary btn-block">Send Reset Link</button>
         </form>
 
         <div class="auth-links">
-            <a href="<?php echo BASE_URL; ?>/auth/login">Back to Login</a>
+            <a href="<?php echo e(url('auth/login')); ?>">Back to Login</a>
         </div>
     </div>
 </div>
 
-<?php require_once '../app/views/layouts/footer.php'; ?>
+<?php require APP_PATH . '/views/layouts/footer.php'; ?>

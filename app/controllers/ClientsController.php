@@ -10,112 +10,109 @@ class ClientsController extends Controller {
 
     private $clientModel;
 
+    /** Editable client fields => max length */
+    private static $fields = array(
+        'first_name' => 100, 'last_name' => 100, 'email' => 255, 'phone' => 50, 'phone_secondary' => 50,
+        'address' => 1000, 'city' => 100, 'state' => 100, 'zip' => 20, 'client_type' => 20, 'notes' => 10000
+    );
+
     public function __construct() {
         $this->clientModel = $this->model('Client');
     }
 
+    /**
+     * List clients
+     */
     public function index() {
-        $this->requireLogin();
+        $this->requirePermission('clients.view');
+        $tenantId = $this->requireTenant();
 
-        $tenantId = $this->getTenantId();
-        $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+        $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
         $perPage = 20;
 
         $filters = array();
-        if (!empty($_GET['client_type'])) $filters['client_type'] = $_GET['client_type'];
-        if (!empty($_GET['status'])) $filters['status'] = $_GET['status'];
-        if (!empty($_GET['search'])) $filters['search'] = $_GET['search'];
+        foreach (array('client_type', 'status', 'search') as $key) {
+            if (isset($_GET[$key]) && is_string($_GET[$key]) && trim($_GET[$key]) !== '') {
+                $filters[$key] = trim($_GET[$key]);
+            }
+        }
+        if (isset($filters['client_type']) && !in_array($filters['client_type'], Client::TYPES, true)) {
+            unset($filters['client_type']);
+        }
+        if (isset($filters['status']) && !in_array($filters['status'], Client::STATUSES, true)) {
+            unset($filters['status']);
+        }
 
         $clients = $this->clientModel->getClientsWithInfo($tenantId, $page, $perPage, $filters);
         $totalClients = $this->clientModel->count($tenantId, $filters);
-        $totalPages = ceil($totalClients / $perPage);
 
-        $data = array(
+        $this->view('clients/index', array(
             'title' => 'Clients',
             'clients' => $clients,
             'currentPage' => $page,
-            'totalPages' => $totalPages,
+            'totalPages' => (int)ceil($totalClients / $perPage),
+            'totalClients' => $totalClients,
             'filters' => $filters
-        );
-
-        $this->view('clients/index', $data);
+        ));
     }
 
-    public function view($id) {
-        $this->requireLogin();
+    /**
+     * Client detail (URL: /clients/view/{id})
+     * @param int $id Client ID
+     */
+    public function show($id) {
+        $this->requirePermission('clients.view');
+        $tenantId = $this->requireTenant();
 
-        $tenantId = $this->getTenantId();
-        $client = $this->clientModel->getById($id, $tenantId);
-
+        $client = $this->clientModel->getClientWithInfo((int)$id, $tenantId);
         if (!$client) {
             $this->setFlash('error', 'Client not found');
             $this->redirect('clients/index');
         }
+        $clientId = (int)$client['id'];
 
-        $activityModel = $this->model('Activity');
-        $activities = $activityModel->getByRelated($tenantId, 'client', $id);
-
-        $attachmentModel = $this->model('Attachment');
-        $attachments = $attachmentModel->getByRelated($tenantId, 'client', $id);
-
-        $data = array(
-            'title' => 'Client Details',
+        $this->view('clients/view', array(
+            'title' => 'Client: ' . trim($client['first_name'] . ' ' . (string)$client['last_name']),
             'client' => $client,
-            'activities' => $activities,
-            'attachments' => $attachments
-        );
-
-        $this->view('clients/view', $data);
+            'activities' => $this->model('Activity')->getByRelated($tenantId, 'client', $clientId),
+            'attachments' => $this->model('Attachment')->getByRelated($tenantId, 'client', $clientId),
+            'tasks' => $this->model('Task')->getByRelated($tenantId, 'client', $clientId),
+            'deals' => $this->clientModel->getDeals($clientId, $tenantId),
+            'properties' => $this->clientModel->getOwnedProperties($clientId, $tenantId)
+        ));
     }
 
+    /**
+     * Create client (GET form, POST save)
+     */
     public function create() {
-        $this->requireLogin();
+        $this->requirePermission('clients.create');
+        $tenantId = $this->requireTenant();
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $this->processCreate();
+            $this->processCreate($tenantId);
             return;
         }
 
-        $data = array(
+        $this->view('clients/create', array(
             'title' => 'Create Client',
             'errors' => array(),
-            'formData' => array()
-        );
-
-        $this->view('clients/create', $data);
+            'formData' => array('client_type' => 'buyer', 'status' => 'active')
+        ));
     }
 
-    private function processCreate() {
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
-            $this->redirect('clients/index');
-        }
+    /**
+     * Save a new client
+     * @param int $tenantId Tenant ID
+     */
+    private function processCreate($tenantId) {
+        $this->requirePostWithCsrf('clients/create');
 
-        $tenantId = $this->getTenantId();
-
-        $formData = array(
-            'first_name' => $this->sanitize($_POST['first_name']),
-            'last_name' => $this->sanitize($_POST['last_name']),
-            'email' => $this->sanitize($_POST['email']),
-            'phone' => $this->sanitize($_POST['phone']),
-            'phone_secondary' => $this->sanitize($_POST['phone_secondary']),
-            'address' => $this->sanitize($_POST['address']),
-            'city' => $this->sanitize($_POST['city']),
-            'state' => $this->sanitize($_POST['state']),
-            'zip' => $this->sanitize($_POST['zip']),
-            'client_type' => $this->sanitize($_POST['client_type']),
-            'notes' => $this->sanitize($_POST['notes'])
-        );
-
-        $errors = validateRequired($formData, array('first_name', 'client_type'));
-
-        if (!empty($formData['email']) && !$this->validateEmail($formData['email'])) {
-            $errors['email'] = 'Invalid email format';
-        }
+        $formData = $this->collectForm(false);
+        $errors = $this->validateForm($formData, false);
 
         if (!empty($errors)) {
-            $data = array('title' => 'Create Client', 'errors' => $errors, 'formData' => $formData);
-            $this->view('clients/create', $data);
+            $this->view('clients/create', array('title' => 'Create Client', 'errors' => $errors, 'formData' => $formData));
             return;
         }
 
@@ -126,93 +123,158 @@ class ClientsController extends Controller {
 
         if ($clientId) {
             logActivity($this->getUserId(), $tenantId, 'created', 'client', $clientId);
+            dispatchEvent($tenantId, 'client.created', $this->clientModel->getById($clientId, $tenantId));
             $this->setFlash('success', 'Client created successfully');
             $this->redirect('clients/view/' . $clientId);
-        } else {
-            $this->setFlash('error', 'Failed to create client');
-            $this->redirect('clients/create');
         }
+
+        $this->setFlash('error', 'Failed to create client');
+        $this->redirect('clients/create');
     }
 
+    /**
+     * Edit client (GET form, POST save)
+     * @param int $id Client ID
+     */
     public function edit($id) {
-        $this->requireLogin();
+        $this->requirePermission('clients.edit');
+        $tenantId = $this->requireTenant();
 
-        $tenantId = $this->getTenantId();
-        $client = $this->clientModel->getById($id, $tenantId);
-
+        $client = $this->clientModel->getById((int)$id, $tenantId);
         if (!$client) {
             $this->setFlash('error', 'Client not found');
             $this->redirect('clients/index');
         }
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $this->processEdit($id);
+            $this->processEdit($client, $tenantId);
             return;
         }
 
-        $data = array('title' => 'Edit Client', 'client' => $client, 'errors' => array());
-        $this->view('clients/edit', $data);
+        $this->view('clients/edit', array('title' => 'Edit Client', 'client' => $client, 'formData' => $client, 'errors' => array()));
     }
 
-    private function processEdit($id) {
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
-            $this->redirect('clients/index');
-        }
+    /**
+     * Save client changes
+     * @param array $client Current client row
+     * @param int $tenantId Tenant ID
+     */
+    private function processEdit($client, $tenantId) {
+        $id = (int)$client['id'];
+        $this->requirePostWithCsrf('clients/edit/' . $id);
 
-        $tenantId = $this->getTenantId();
-
-        $formData = array(
-            'first_name' => $this->sanitize($_POST['first_name']),
-            'last_name' => $this->sanitize($_POST['last_name']),
-            'email' => $this->sanitize($_POST['email']),
-            'phone' => $this->sanitize($_POST['phone']),
-            'phone_secondary' => $this->sanitize($_POST['phone_secondary']),
-            'address' => $this->sanitize($_POST['address']),
-            'city' => $this->sanitize($_POST['city']),
-            'state' => $this->sanitize($_POST['state']),
-            'zip' => $this->sanitize($_POST['zip']),
-            'client_type' => $this->sanitize($_POST['client_type']),
-            'status' => $this->sanitize($_POST['status']),
-            'notes' => $this->sanitize($_POST['notes'])
-        );
-
-        $errors = validateRequired($formData, array('first_name', 'client_type'));
+        $formData = $this->collectForm(true);
+        $errors = $this->validateForm($formData, true);
 
         if (!empty($errors)) {
-            $client = $this->clientModel->getById($id, $tenantId);
-            $data = array('title' => 'Edit Client', 'client' => $client, 'errors' => $errors);
-            $this->view('clients/edit', $data);
+            $this->view('clients/edit', array(
+                'title' => 'Edit Client',
+                'client' => $client,
+                'formData' => array_merge($client, $formData),
+                'errors' => $errors
+            ));
             return;
         }
 
-        if ($this->clientModel->update($id, $tenantId, $formData)) {
+        $update = array();
+        foreach ($formData as $key => $value) {
+            $update[$key] = ($value === '' && $key !== 'first_name') ? null : $value;
+        }
+
+        if ($this->clientModel->update($id, $tenantId, $update)) {
             logActivity($this->getUserId(), $tenantId, 'updated', 'client', $id);
+            $updated = $this->clientModel->getById($id, $tenantId);
+            $updated['old_status'] = $client['status'];
+            dispatchEvent($tenantId, 'client.updated', $updated);
             $this->setFlash('success', 'Client updated successfully');
             $this->redirect('clients/view/' . $id);
-        } else {
-            $this->setFlash('error', 'Failed to update client');
-            $this->redirect('clients/edit/' . $id);
         }
+
+        $this->setFlash('error', 'Failed to update client');
+        $this->redirect('clients/edit/' . $id);
     }
 
+    /**
+     * Delete client (POST + CSRF)
+     * @param int $id Client ID
+     */
     public function delete($id) {
-        $this->requireLogin();
+        $this->requirePermission('clients.delete');
+        $tenantId = $this->requireTenant();
+        $this->requirePostWithCsrf('clients/index');
 
-        if (!isset($_POST['csrf_token']) || !$this->verifyCsrfToken($_POST['csrf_token'])) {
-            $this->setFlash('error', 'Invalid request');
+        $client = $this->clientModel->getById((int)$id, $tenantId);
+        if (!$client) {
+            $this->setFlash('error', 'Client not found');
             $this->redirect('clients/index');
         }
 
-        $tenantId = $this->getTenantId();
-
-        if ($this->clientModel->delete($id, $tenantId)) {
-            logActivity($this->getUserId(), $tenantId, 'deleted', 'client', $id);
+        if ($this->clientModel->delete((int)$client['id'], $tenantId)) {
+            logActivity($this->getUserId(), $tenantId, 'deleted', 'client', $client['id']);
+            dispatchEvent($tenantId, 'client.deleted', $client);
             $this->setFlash('success', 'Client deleted successfully');
         } else {
             $this->setFlash('error', 'Failed to delete client');
         }
 
         $this->redirect('clients/index');
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Current tenant ID, or redirect when the user has no tenant (platform admin)
+     * @return int
+     */
+    private function requireTenant() {
+        $tenantId = $this->getTenantId();
+        if (empty($tenantId)) {
+            $this->setFlash('error', 'Clients belong to an agency account. Log in as an agency user to manage clients.');
+            $this->redirect('dashboard/index');
+        }
+        return (int)$tenantId;
+    }
+
+    /**
+     * Collect trimmed raw form values
+     * @param bool $withStatus Include status (edit form)
+     * @return array
+     */
+    private function collectForm($withStatus) {
+        $data = array();
+        foreach (array_keys(self::$fields) as $field) {
+            $data[$field] = isset($_POST[$field]) && is_string($_POST[$field]) ? trim($_POST[$field]) : '';
+        }
+        if ($withStatus) {
+            $data['status'] = isset($_POST['status']) && is_string($_POST['status']) ? trim($_POST['status']) : '';
+        }
+        return $data;
+    }
+
+    /**
+     * Validate client form data
+     * @param array $data
+     * @param bool $withStatus
+     * @return array field => message
+     */
+    private function validateForm($data, $withStatus) {
+        $errors = validateRequired($data, array('first_name', 'client_type'));
+        foreach (self::$fields as $field => $max) {
+            if (strlen($data[$field]) > $max) {
+                $errors[$field] = ucfirst(str_replace('_', ' ', $field)) . " must be at most {$max} characters";
+            }
+        }
+        if ($data['email'] !== '' && !$this->validateEmail($data['email'])) {
+            $errors['email'] = 'Invalid email format';
+        }
+        if ($data['client_type'] !== '' && !in_array($data['client_type'], Client::TYPES, true)) {
+            $errors['client_type'] = 'Invalid client type';
+        }
+        if ($withStatus && !in_array($data['status'], Client::STATUSES, true)) {
+            $errors['status'] = 'Invalid status';
+        }
+        return $errors;
     }
 }

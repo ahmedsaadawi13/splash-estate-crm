@@ -83,4 +83,23 @@ class Attachment extends Model {
 
         return false;
     }
+
+    /**
+     * Whether the record an attachment would belong to exists in the tenant
+     * @param int $tenantId Tenant ID
+     * @param string $type lead|client|property|deal|task
+     * @param int $relatedId Record ID
+     * @return bool
+     */
+    public function relatedExists($tenantId, $type, $relatedId) {
+        $tables = array('lead' => 'leads', 'client' => 'clients', 'property' => 'properties', 'deal' => 'deals', 'task' => 'tasks');
+        if (!isset($tables[$type]) || (int)$relatedId <= 0) {
+            return false;
+        }
+        $stmt = $this->conn->prepare("SELECT COUNT(*) FROM `{$tables[$type]}` WHERE id = :id AND tenant_id = :tenant_id");
+        $stmt->bindValue(':id', (int)$relatedId, PDO::PARAM_INT);
+        $stmt->bindValue(':tenant_id', (int)$tenantId, PDO::PARAM_INT);
+        $stmt->execute();
+        return (int)$stmt->fetchColumn() > 0;
+    }
 }

@@ -3,285 +3,422 @@
 
 /**
  * SplashEstate CRM - Authentication Controller
- * Handles user login, registration, and logout
+ * Handles login (with brute-force protection), registration, logout and password reset
  */
 
 class AuthController extends Controller {
 
+    /** Lockout policy: failures allowed per window */
+    const MAX_FAILURES_PER_EMAIL = 5;
+    const MAX_FAILURES_PER_IP = 20;
+    const LOCKOUT_MINUTES = 15;
+
+    /** Password reset token lifetime (seconds) and per-user issue limit per hour */
+    const RESET_TTL = 3600;
+    const MAX_RESETS_PER_HOUR = 3;
+
+    const MIN_PASSWORD_LENGTH = 8;
+
     private $userModel;
 
-    /**
-     * Constructor
-     */
     public function __construct() {
         $this->userModel = $this->model('User');
     }
 
     /**
-     * Display login form
+     * Login form / submit
      */
     public function login() {
-        // If already logged in, redirect to dashboard
         if ($this->isLoggedIn()) {
             $this->redirect('dashboard/index');
         }
 
-        // Handle form submission
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $this->processLogin();
             return;
         }
 
-        // Display login form
-        $data = array(
-            'title' => 'Login',
-            'email' => '',
-            'errors' => array()
-        );
-
-        $this->view('auth/login', $data);
+        $this->view('auth/login', array('title' => 'Login', 'email' => '', 'errors' => array()));
     }
 
     /**
      * Process login form
      */
     private function processLogin() {
-        // Sanitize input
-        $email = $this->sanitize($_POST['email']);
-        $password = $_POST['password']; // Don't sanitize password
+        $this->requirePostWithCsrf('auth/login');
 
-        // Validate
+        $email = $this->postString('email');
+        $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
+        $ip = $this->clientIp();
+
         $errors = array();
-
-        if (empty($email)) {
+        if ($email === '') {
             $errors['email'] = 'Email is required';
         } elseif (!$this->validateEmail($email)) {
             $errors['email'] = 'Invalid email format';
         }
-
-        if (empty($password)) {
+        if ($password === '') {
             $errors['password'] = 'Password is required';
         }
-
-        // If validation fails, show form with errors
         if (!empty($errors)) {
-            $data = array(
-                'title' => 'Login',
-                'email' => $email,
-                'errors' => $errors
-            );
-            $this->view('auth/login', $data);
+            $this->renderLogin($email, $errors);
             return;
         }
 
-        // Authenticate user
+        // Brute-force protection: refuse before checking the password
+        if ($this->userModel->countRecentFailuresByEmail($email, self::LOCKOUT_MINUTES) >= self::MAX_FAILURES_PER_EMAIL
+            || $this->userModel->countRecentFailuresByIp($ip, self::LOCKOUT_MINUTES) >= self::MAX_FAILURES_PER_IP) {
+            http_response_code(429);
+            $this->renderLogin($email, array(
+                'general' => 'Too many failed login attempts. Please wait ' . self::LOCKOUT_MINUTES . ' minutes and try again, or reset your password.'
+            ));
+            return;
+        }
+
         $user = $this->userModel->authenticate($email, $password);
 
-        if ($user) {
-            // Check if user is active
-            if ($user['status'] !== 'active') {
-                $errors['general'] = 'Your account is inactive. Please contact support.';
-                $data = array(
-                    'title' => 'Login',
-                    'email' => $email,
-                    'errors' => $errors
-                );
-                $this->view('auth/login', $data);
+        if (!$user) {
+            $this->userModel->recordLoginAttempt($email, $ip, false);
+            $this->renderLogin($email, array('general' => 'Invalid email or password'));
+            return;
+        }
+
+        if ($user['status'] !== 'active') {
+            $this->renderLogin($email, array('general' => 'Your account is inactive. Please contact your administrator.'));
+            return;
+        }
+
+        if (!empty($user['tenant_id'])) {
+            $tenant = $this->model('Tenant')->findTenant($user['tenant_id']);
+            if (!$tenant || $tenant['status'] !== 'active') {
+                $this->renderLogin($email, array('general' => 'Your agency account is not active. Please contact support.'));
                 return;
             }
-
-            // Set session variables
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['tenant_id'] = $user['tenant_id'];
-            $_SESSION['user_email'] = $user['email'];
-            $_SESSION['user_name'] = $user['first_name'] . ' ' . $user['last_name'];
-            $_SESSION['user_role'] = $user['role'];
-
-            // Redirect to dashboard
-            $this->redirect('dashboard/index');
-        } else {
-            $errors['general'] = 'Invalid email or password';
-            $data = array(
-                'title' => 'Login',
-                'email' => $email,
-                'errors' => $errors
-            );
-            $this->view('auth/login', $data);
         }
+
+        $this->userModel->recordLoginAttempt($email, $ip, true);
+        $this->userModel->updateLastLogin($user['id']);
+        if (mt_rand(1, 100) === 1) {
+            $this->userModel->purgeLoginAttempts(30);
+        }
+
+        $this->startUserSession($user['id'], $user['tenant_id'], $user['email'], $user['first_name'] . ' ' . $user['last_name'], $user['role']);
+        logActivity($user['id'], $user['tenant_id'], 'login', 'user', $user['id']);
+
+        $this->redirect('dashboard/index');
     }
 
     /**
-     * Logout user
+     * Render login form
+     */
+    private function renderLogin($email, $errors) {
+        $this->view('auth/login', array('title' => 'Login', 'email' => $email, 'errors' => $errors));
+    }
+
+    /**
+     * Log out (POST with CSRF preferred; GET kept for the nav link)
      */
     public function logout() {
-        // Destroy session
-        session_unset();
+        // POST + CSRF only, so other sites can't log users out with a link/image
+        $this->requirePostWithCsrf('dashboard/index');
+
+        $_SESSION = array();
+        if (ini_get('session.use_cookies')) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'], $params['secure'], $params['httponly']);
+        }
         session_destroy();
 
-        // Redirect to login
         $this->redirect('auth/login');
     }
 
     /**
-     * Display registration form (for tenant signup)
+     * Registration form (tenant signup)
      */
     public function register() {
-        // If already logged in, redirect to dashboard
         if ($this->isLoggedIn()) {
             $this->redirect('dashboard/index');
         }
 
-        // Handle form submission
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $this->processRegistration();
             return;
         }
 
-        // Display registration form
-        $data = array(
-            'title' => 'Register',
-            'errors' => array(),
-            'formData' => array()
-        );
-
-        $this->view('auth/register', $data);
+        $this->view('auth/register', array('title' => 'Register', 'errors' => array(), 'formData' => array()));
     }
 
     /**
      * Process registration form
      */
     private function processRegistration() {
-        // Sanitize input
+        $this->requirePostWithCsrf('auth/register');
+
         $formData = array(
-            'company_name' => $this->sanitize($_POST['company_name']),
-            'email' => $this->sanitize($_POST['email']),
-            'first_name' => $this->sanitize($_POST['first_name']),
-            'last_name' => $this->sanitize($_POST['last_name']),
-            'phone' => $this->sanitize($_POST['phone']),
-            'password' => $_POST['password'],
-            'confirm_password' => $_POST['confirm_password']
+            'company_name' => $this->postString('company_name'),
+            'email' => strtolower($this->postString('email')),
+            'first_name' => $this->postString('first_name'),
+            'last_name' => $this->postString('last_name'),
+            'phone' => $this->postString('phone'),
+            'password' => isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '',
+            'confirm_password' => isset($_POST['confirm_password']) && is_string($_POST['confirm_password']) ? $_POST['confirm_password'] : ''
         );
 
-        // Validate
         $errors = validateRequired($formData, array('company_name', 'email', 'first_name', 'last_name', 'password', 'confirm_password'));
 
-        // Email validation
+        foreach (array('company_name' => 255, 'email' => 255, 'first_name' => 100, 'last_name' => 100, 'phone' => 50) as $field => $max) {
+            if (strlen($formData[$field]) > $max) {
+                $errors[$field] = ucfirst(str_replace('_', ' ', $field)) . " must be at most {$max} characters";
+            }
+        }
         if (empty($errors['email']) && !$this->validateEmail($formData['email'])) {
             $errors['email'] = 'Invalid email format';
         }
-
-        // Check if email already exists
         if (empty($errors['email']) && $this->userModel->emailExists($formData['email'])) {
             $errors['email'] = 'Email already registered';
         }
-
-        // Password validation
-        if (empty($errors['password']) && strlen($formData['password']) < 6) {
-            $errors['password'] = 'Password must be at least 6 characters';
+        $passwordError = $this->validatePassword($formData['password'], $formData['confirm_password']);
+        if (empty($errors['password']) && $passwordError !== null) {
+            $errors[$passwordError[0]] = $passwordError[1];
         }
 
-        if ($formData['password'] !== $formData['confirm_password']) {
-            $errors['confirm_password'] = 'Passwords do not match';
-        }
+        // Never echo passwords back into the form
+        $safeFormData = $formData;
+        unset($safeFormData['password'], $safeFormData['confirm_password']);
 
-        // If validation fails, show form with errors
         if (!empty($errors)) {
-            $data = array(
-                'title' => 'Register',
-                'errors' => $errors,
-                'formData' => $formData
-            );
-            $this->view('auth/register', $data);
+            $this->view('auth/register', array('title' => 'Register', 'errors' => $errors, 'formData' => $safeFormData));
             return;
         }
 
-        // Create tenant
         $tenantModel = $this->model('Tenant');
-        $tenantData = array(
-            'name' => $formData['company_name'],
-            'slug' => $this->generateSlug($formData['company_name']),
-            'email' => $formData['email'],
-            'phone' => $formData['phone'],
-            'api_key' => generateApiKey(),
-            'status' => 'active'
-        );
+        $subscriptionModel = $this->model('Subscription');
+        $conn = $this->userModel->getConnection();
 
-        $tenantId = $tenantModel->create($tenantData);
+        try {
+            $conn->beginTransaction();
 
-        if ($tenantId) {
-            // Create admin user for tenant
-            $userData = array(
+            $tenantId = $tenantModel->create(array(
+                'name' => $formData['company_name'],
+                'slug' => $this->generateSlug($formData['company_name'], $tenantModel),
+                'email' => $formData['email'],
+                'phone' => $formData['phone'] !== '' ? $formData['phone'] : null,
+                'api_key' => generateApiKey(),
+                'status' => 'active'
+            ));
+            if (!$tenantId) {
+                throw new RuntimeException('Tenant insert failed');
+            }
+
+            $userId = $this->userModel->createUser(array(
                 'tenant_id' => $tenantId,
                 'email' => $formData['email'],
                 'password' => $formData['password'],
                 'first_name' => $formData['first_name'],
                 'last_name' => $formData['last_name'],
-                'phone' => $formData['phone'],
+                'phone' => $formData['phone'] !== '' ? $formData['phone'] : null,
                 'role' => 'tenant_admin',
                 'status' => 'active'
-            );
-
-            $userId = $this->userModel->createUser($userData);
-
-            if ($userId) {
-                // Assign free trial plan
-                $subscriptionModel = $this->model('Subscription');
-                $subscriptionModel->createTrialSubscription($tenantId);
-
-                // Log in the user
-                $_SESSION['user_id'] = $userId;
-                $_SESSION['tenant_id'] = $tenantId;
-                $_SESSION['user_email'] = $formData['email'];
-                $_SESSION['user_name'] = $formData['first_name'] . ' ' . $formData['last_name'];
-                $_SESSION['user_role'] = 'tenant_admin';
-
-                $this->setFlash('success', 'Registration successful! Welcome to SplashEstate CRM.');
-                $this->redirect('dashboard/index');
+            ));
+            if (!$userId) {
+                throw new RuntimeException('User insert failed');
             }
+
+            if (!$subscriptionModel->createTrialSubscription($tenantId)) {
+                error_log('Registration: no free-trial plan found for tenant ' . $tenantId);
+            }
+
+            $conn->commit();
+        } catch (Exception $e) {
+            if ($conn->inTransaction()) {
+                $conn->rollBack();
+            }
+            error_log('Registration failed: ' . $e->getMessage());
+            $this->view('auth/register', array(
+                'title' => 'Register',
+                'errors' => array('general' => 'Registration failed. Please try again.'),
+                'formData' => $safeFormData
+            ));
+            return;
         }
 
-        // If we get here, something went wrong
-        $errors['general'] = 'Registration failed. Please try again.';
-        $data = array(
-            'title' => 'Register',
-            'errors' => $errors,
-            'formData' => $formData
-        );
-        $this->view('auth/register', $data);
+        $this->startUserSession($userId, $tenantId, $formData['email'], $formData['first_name'] . ' ' . $formData['last_name'], 'tenant_admin');
+        $this->userModel->updateLastLogin($userId);
+        logActivity($userId, $tenantId, 'registered', 'tenant', $tenantId);
+
+        $this->setFlash('success', 'Registration successful! Welcome to SplashEstate CRM.');
+        $this->redirect('dashboard/index');
     }
 
     /**
-     * Generate slug from string
-     * @param string $string Input string
-     * @return string Slug
-     */
-    private function generateSlug($string) {
-        $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $string), '-'));
-        // Make unique by appending random number
-        $slug .= '-' . substr(md5(uniqid()), 0, 6);
-        return $slug;
-    }
-
-    /**
-     * Forgot password form
+     * Forgot password: always shows the same message so account existence is not revealed
      */
     public function forgot() {
-        $data = array(
-            'title' => 'Forgot Password',
-            'message' => ''
-        );
+        $data = array('title' => 'Forgot Password', 'message' => '', 'messageType' => 'info', 'email' => '');
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $email = $this->sanitize($_POST['email']);
+            $this->requirePostWithCsrf('auth/forgot');
+            $email = strtolower($this->postString('email'));
+            $data['email'] = $email;
 
-            if ($this->validateEmail($email)) {
-                // TODO: Implement password reset email
-                $data['message'] = 'If an account exists with this email, you will receive password reset instructions.';
-            } else {
+            if (!$this->validateEmail($email)) {
                 $data['message'] = 'Please enter a valid email address.';
+                $data['messageType'] = 'error';
+            } else {
+                $this->sendResetLink($email);
+                $data['message'] = 'If an account exists with this email, you will receive password reset instructions shortly.';
+                $data['email'] = '';
             }
         }
 
         $this->view('auth/forgot', $data);
+    }
+
+    /**
+     * Issue and email a reset token (silently does nothing for unknown/inactive users)
+     * @param string $email
+     */
+    private function sendResetLink($email) {
+        $user = $this->userModel->findByEmail($email);
+        if (!$user || $user['status'] !== 'active') {
+            return;
+        }
+        if ($this->userModel->countRecentPasswordResets($user['id'], 60) >= self::MAX_RESETS_PER_HOUR) {
+            error_log('Password reset rate limit hit for user ' . $user['id']);
+            return;
+        }
+
+        $token = bin2hex(random_bytes(32));
+        if (!$this->userModel->createPasswordReset($user['id'], hash('sha256', $token), self::RESET_TTL)) {
+            return;
+        }
+
+        $link = url('auth/reset/' . $token);
+        $html = '<p>Hello ' . e($user['first_name']) . ',</p>'
+              . '<p>We received a request to reset your SplashEstate CRM password. Click the link below to choose a new password:</p>'
+              . '<p><a href="' . e($link) . '">' . e($link) . '</a></p>'
+              . '<p>This link expires in 1 hour and can be used once. If you did not request a reset, you can ignore this email.</p>';
+
+        $sent = sendEmail($user['email'], 'Reset your SplashEstate CRM password', $html);
+        if (!$sent) {
+            error_log('Password reset email could not be sent to user ' . $user['id']);
+            if (defined('APP_ENV') && APP_ENV === 'development' && defined('APP_DEBUG') && APP_DEBUG) {
+                // Development convenience only: mail is usually not configured locally
+                error_log('[dev] Password reset link for user ' . $user['id'] . ': ' . $link);
+            }
+        }
+        logActivity($user['id'], $user['tenant_id'], 'password_reset_requested', 'user', $user['id']);
+    }
+
+    /**
+     * Reset password with a token from the email link (URL: /auth/reset/{token})
+     * @param string $token Raw token
+     */
+    public function reset($token = '') {
+        if ($this->isLoggedIn()) {
+            $this->redirect('dashboard/index');
+        }
+
+        $token = is_string($token) ? $token : '';
+        $reset = preg_match('/^[a-f0-9]{64}$/', $token) ? $this->userModel->findValidPasswordReset(hash('sha256', $token)) : false;
+
+        $data = array('title' => 'Reset Password', 'token' => $token, 'errors' => array(), 'invalid' => !$reset);
+
+        if ($reset && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            $this->requirePostWithCsrf('auth/reset/' . $token);
+
+            $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
+            $confirm = isset($_POST['confirm_password']) && is_string($_POST['confirm_password']) ? $_POST['confirm_password'] : '';
+            $error = $this->validatePassword($password, $confirm);
+
+            if ($error !== null) {
+                $data['errors'][$error[0]] = $error[1];
+            } elseif ($this->userModel->markPasswordResetUsed($reset['id'])) {
+                $this->userModel->updatePassword($reset['user_id'], $password);
+                $this->userModel->invalidatePasswordResets($reset['user_id']);
+                logActivity($reset['user_id'], null, 'password_reset', 'user', $reset['user_id']);
+
+                // Fresh session for the login that follows
+                session_regenerate_id(true);
+                unset($_SESSION['csrf_token']);
+                $this->setFlash('success', 'Your password has been reset. You can now log in.');
+                $this->redirect('auth/login');
+            } else {
+                $data['invalid'] = true;
+            }
+        }
+
+        if ($data['invalid']) {
+            http_response_code(400);
+        }
+        $this->view('auth/reset', $data);
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Start an authenticated session (new session id + new CSRF token)
+     */
+    private function startUserSession($userId, $tenantId, $email, $name, $role) {
+        session_regenerate_id(true);
+        unset($_SESSION['csrf_token']);
+        $_SESSION['user_id'] = (int)$userId;
+        $_SESSION['tenant_id'] = $tenantId !== null ? (int)$tenantId : null;
+        $_SESSION['user_email'] = $email;
+        $_SESSION['user_name'] = $name;
+        $_SESSION['user_role'] = $role;
+        $_SESSION['last_activity'] = time();
+    }
+
+    /**
+     * Validate a new password
+     * @return array|null [field, message] or null when valid
+     */
+    private function validatePassword($password, $confirm) {
+        if (strlen($password) < self::MIN_PASSWORD_LENGTH) {
+            return array('password', 'Password must be at least ' . self::MIN_PASSWORD_LENGTH . ' characters');
+        }
+        if (strlen($password) > 72) {
+            return array('password', 'Password must be at most 72 characters');
+        }
+        if ($password !== $confirm) {
+            return array('confirm_password', 'Passwords do not match');
+        }
+        return null;
+    }
+
+    /**
+     * Trimmed POST string ('' when missing)
+     */
+    private function postString($key) {
+        return isset($_POST[$key]) && is_string($_POST[$key]) ? trim($_POST[$key]) : '';
+    }
+
+    /**
+     * Client IP (REMOTE_ADDR only; proxy headers are spoofable)
+     */
+    private function clientIp() {
+        return isset($_SERVER['REMOTE_ADDR']) ? (string)$_SERVER['REMOTE_ADDR'] : '0.0.0.0';
+    }
+
+    /**
+     * Generate a unique tenant slug from a company name
+     * @param string $string Company name
+     * @param Tenant $tenantModel
+     * @return string
+     */
+    private function generateSlug($string, $tenantModel) {
+        $base = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $string), '-'));
+        if ($base === '') {
+            $base = 'agency';
+        }
+        $base = substr($base, 0, 200);
+        $slug = $base;
+        while ($tenantModel->slugExists($slug)) {
+            $slug = $base . '-' . bin2hex(random_bytes(3));
+        }
+        return $slug;
     }
 }

@@ -36,16 +36,14 @@ class Tenant extends Model {
     }
 
     /**
-     * Get tenant by ID
+     * Get tenant by ID.
+     * (Named findTenant because Model::getById($id, $tenantId) has a
+     * different, tenant-scoped signature; tenants have no tenant_id column.)
      * @param int $id Tenant ID
-     * @return mixed Tenant data or false
+     * @return array|false Tenant data or false
      */
-    public function getById($id) {
-        $sql = "SELECT * FROM {$this->table} WHERE id = :id LIMIT 1";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetch();
+    public function findTenant($id) {
+        return $this->findById($id);
     }
 
     /**
